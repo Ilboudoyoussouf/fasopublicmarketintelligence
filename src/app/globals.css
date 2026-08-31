@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+/*
+ * Design system — section 55 à 58 du cahier des charges :
+ * fond clair, beaucoup d'espace blanc, cartes sobres, bordures fines,
+ * couleurs limitées. Rouge/orange = alerte, vert = favorable,
+ * bleu/neutre = donnée. « Data first, decoration last. »
+ */
+:root {
+  --paper: #ffffff;
+  --paper-sunken: #f7f8fa;
+  --ink: #14181f;
+  --ink-muted: #55606f;
+  --ink-faint: #8892a0;
+  --line: #e4e7ec;
+  --line-strong: #cbd2dc;
+
+  --brand: #1e3a8a;
+  --brand-soft: #eef2fb;
+
+  --info: #2563eb;
+  --info-soft: #eaf1fd;
+  --success: #15803d;
+  --success-soft: #eafaf0;
+  --warning: #b45309;
+  --warning-soft: #fef4e6;
+  --critical: #b91c1c;
+  --critical-soft: #fdecec;
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-paper-sunken: var(--paper-sunken);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-critical: var(--critical);
+  --color-critical-soft: var(--critical-soft);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--paper-sunken);
+  color: var(--ink);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}
+
+* {
+  border-color: var(--line);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 8px;
+}
+
+.input {
+  width: 100%;
+  border-radius: 0.375rem;
+  border: 1px solid var(--line);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  background: var(--paper);
+  color: var(--ink);
+}
+.input:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+.input::placeholder {
+  color: var(--ink-faint);
+}

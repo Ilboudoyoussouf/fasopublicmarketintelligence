@@ -1,0 +1,33 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "opportunities": "Opportunités",
+    "markets": "Marchés",
+    "results": "Résultats",
+    "organizations": "Organismes",
+    "companies": "Entreprises",
+    "analytics": "Analyses",
+    "ppm": "PPM",
+    "watch": "Veille",
+    "folders": "Dossiers",
+    "assistant": "Assistant IA",
+    "documents": "Documents",
+    "myCompany": "Mon entreprise",
+    "account": "Compte",
+    "admin": "Administration"
+  },
+  "common": {
+    "follow": "Suivre",
+    "following": "Suivi",
+    "compare": "Comparer",
+    "addToFolder": "Ajouter au dossier",
+    "viewSource": "Consulter la source",
+    "loading": "Chargement…",
+    "noData": "Aucune donnée",
+    "save": "Enregistrer",
+    "cancel": "Annuler"
+  },
+  "compliance": {
+    "footer": "Les informations proviennent de sources officielles et sont restructurées à des fins de veille, de recherche et d'analyse. Les scores et recommandations sont indicatifs et ne constituent ni une décision administrative, ni un avis juridique, ni une garantie d'éligibilité ou de succès. La publication officielle demeure la référence en cas de divergence."
+  }
+}

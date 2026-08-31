@@ -1,0 +1,1506 @@
+// FASO Public Market Intelligence — modèle de données universel
+// Ref: cahier des charges section 4 (architecture métier), section 42 (BDD logique),
+// sections 7-19 (données à extraire), section 98 (prêt multi-pays).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =====================================================================
+// 0. RÉFÉRENTIEL PAYS / GÉOGRAPHIE (section 98 — pas de champs Burkina-only)
+// =====================================================================
+
+model Country {
+  id                  String   @id @default(cuid())
+  code                String   @unique // ISO alpha-2, ex "BF"
+  name                String
+  regulationFramework String? // ex "Code des marchés publics du Burkina Faso"
+  primarySourceName   String? // ex "DGCMEF"
+  primarySourceUrl    String?
+  currency            String   @default("XOF")
+  createdAt           DateTime @default(now())
+
+  regions                Region[]
+  contractingAuthorities ContractingAuthority[]
+  companies              Company[]
+  sources                Source[]
+  tenants                Tenant[]
+}
+
+model Region {
+  id        String  @id @default(cuid())
+  countryId String
+  country   Country @relation(fields: [countryId], references: [id])
+  name      String
+  code      String?
+
+  provinces Province[]
+  markets   Market[]
+
+  @@unique([countryId, name])
+}
+
+model Province {
+  id       String  @id @default(cuid())
+  regionId String
+  region   Region  @relation(fields: [regionId], references: [id])
+  name     String
+  code     String?
+
+  communes Commune[]
+
+  @@unique([regionId, name])
+}
+
+model Commune {
+  id         String   @id @default(cuid())
+  provinceId String
+  province   Province @relation(fields: [provinceId], references: [id])
+  name       String
+
+  @@unique([provinceId, name])
+}
+
+// =====================================================================
+// 1. SOURCE DOCUMENTAIRE — Publication → Document → Page (section 2.1, 3, 54)
+// =====================================================================
+
+enum PublicationKind {
+  QUOTIDIEN_MARCHES
+  AVIS_GENERAL
+  PPM
+  DOCUMENT_REGLEMENTAIRE
+  DOCUMENT_STATISTIQUE
+  AUTRE
+}
+
+model Source {
+  id            String    @id @default(cuid())
+  countryId     String
+  country       Country   @relation(fields: [countryId], references: [id])
+  name          String // "DGCMEF"
+  baseUrl       String
+  isActive      Boolean   @default(true)
+  lastCrawledAt DateTime?
+  createdAt     DateTime  @default(now())
+
+  publications Publication[]
+}
+
+// Une Publication = un événement de parution (peut regrouper plusieurs
+// fichiers : principal + bis, ou un numéro double dans un seul fichier).
+model Publication {
+  id            String          @id @default(cuid())
+  sourceId      String
+  source        Source          @relation(fields: [sourceId], references: [id])
+  kind          PublicationKind
+  numero        String // ex "4477" ou "4473-4474"
+  isDoubleIssue Boolean         @default(false)
+  publishedAt   DateTime
+  title         String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  documents      Document[]
+  notices        Notice[]
+  ppmPlans       PpmPlan[]
+  generalNotices GeneralNotice[]
+
+  @@unique([sourceId, numero, kind])
+  @@index([publishedAt])
+}
+
+enum ExtractionStatus {
+  PENDING
+  DOWNLOADED
+  OCR_DONE
+  PARSED
+  CLASSIFIED
+  EXTRACTED
+  VALIDATED
+  FAILED
+}
+
+model Document {
+  id               String           @id @default(cuid())
+  publicationId    String
+  publication      Publication      @relation(fields: [publicationId], references: [id])
+  filename         String
+  url              String
+  fileHash         String?
+  sizeBytes        Int?
+  mimeType         String?
+  isPrincipal      Boolean          @default(true)
+  isBis            Boolean          @default(false)
+  extractionStatus ExtractionStatus @default(PENDING)
+  downloadedAt     DateTime?
+  createdAt        DateTime         @default(now())
+
+  pages          DocumentPage[]
+  extractionJobs ExtractionJob[]
+  notices        Notice[]
+  corrections    Correction[]
+  cancellations  Cancellation[]
+  republications Republication[]
+  results        Result[]
+  appeals        Appeal[]
+  marketEvents   MarketEvent[]
+  ppmItems       PpmItem[]
+
+  @@unique([url])
+  @@index([publicationId])
+}
+
+model DocumentPage {
+  id            String   @id @default(cuid())
+  documentId    String
+  document      Document @relation(fields: [documentId], references: [id])
+  pageNumber    Int
+  rawText       String?
+  ocrConfidence Float?
+  createdAt     DateTime @default(now())
+
+  @@unique([documentId, pageNumber])
+}
+
+// =====================================================================
+// 2. ORGANISMES (autorités contractantes) — section "Autorité contractante"
+// =====================================================================
+
+enum OrganizationType {
+  MINISTERE
+  INSTITUTION
+  EPE
+  REGION
+  PROVINCE
+  COMMUNE
+  PROJET
+  AUTRE
+}
+
+model ContractingAuthority {
+  id               String                 @id @default(cuid())
+  countryId        String
+  country          Country                @relation(fields: [countryId], references: [id])
+  name             String
+  type             OrganizationType
+  parentId         String?
+  parent           ContractingAuthority?  @relation("AuthorityHierarchy", fields: [parentId], references: [id])
+  children         ContractingAuthority[] @relation("AuthorityHierarchy")
+  regionName       String?
+  provinceName     String?
+  communeName      String?
+  delegatedManager String? // maître d'ouvrage délégué
+  createdAt        DateTime               @default(now())
+
+  markets        Market[]
+  ppmPlans       PpmPlan[]
+  generalNotices GeneralNotice[]
+
+  @@unique([countryId, name])
+}
+
+// =====================================================================
+// 3. TAXONOMIE (section 5, admin-extensible — section 91)
+// =====================================================================
+
+enum SectorGroup {
+  FOURNITURES_SERVICES
+  TRAVAUX
+  PRESTATIONS_INTELLECTUELLES
+}
+
+model Sector {
+  id    String      @id @default(cuid())
+  group SectorGroup
+  name  String
+  code  String?
+
+  subsectors     Subsector[]
+  markets        Market[]
+  tenantSectors  TenantSector[]
+  companySectors CompanySector[]
+  ppmItems       PpmItem[]
+
+  @@unique([group, name])
+}
+
+model Subsector {
+  id       String @id @default(cuid())
+  sectorId String
+  sector   Sector @relation(fields: [sectorId], references: [id])
+  name     String
+
+  markets Market[]
+
+  @@unique([sectorId, name])
+}
+
+enum ProcedureType {
+  APPEL_OFFRES_OUVERT
+  APPEL_OFFRES_OUVERT_ACCELERE
+  DEMANDE_PRIX
+  DEMANDE_COTATION
+  MANIFESTATION_INTERET
+  DEMANDE_PROPOSITIONS
+  DEMANDE_PROPOSITIONS_ALLEGEE
+  AUTRE
+}
+
+// =====================================================================
+// 4. MARCHÉS — coeur de l'architecture (section 4, 7, 8)
+// =====================================================================
+
+enum MarketStatus {
+  PLANIFIE
+  PUBLIE
+  RECTIFIE
+  ANNULE
+  REPRIS
+  SOUMISSIONS_CLOSES
+  EN_EVALUATION
+  RESULTAT_PUBLIE
+  RESULTAT_RECTIFIE
+  EN_RECOURS
+  EN_REEXAMEN
+  ATTRIBUE
+  CLOTURE
+}
+
+enum PublicationType {
+  AVIS_APPEL_OFFRES
+  DEMANDE_PRIX
+  DEMANDE_COTATION
+  APPEL_OFFRES_OUVERT
+  APPEL_OFFRES_ACCELERE
+  MANIFESTATION_INTERET
+  DEMANDE_PROPOSITIONS
+  RESULTAT_PROVISOIRE
+  ATTRIBUTION
+  RECTIFICATIF
+  ANNULATION
+  REPRISE
+  REEXAMEN
+  DECISION_RECOURS
+  AVIS_GENERAL_PASSATION
+  PLAN_PASSATION
+}
+
+enum FinancingSource {
+  EXTERIEUR
+  NATIONAL
+  COMMUNAL
+  AUTRE
+}
+
+model Donor {
+  id   String @id @default(cuid())
+  name String @unique
+
+  fundings Funding[]
+}
+
+model Project {
+  id   String @id @default(cuid())
+  name String
+
+  fundings Funding[]
+  ppmItems PpmItem[]
+}
+
+model Market {
+  id              String          @id @default(cuid())
+  reference       String? // référence officielle
+  procedureNumber String?
+  title           String
+  description     String?
+  publicationType PublicationType
+  procedureType   ProcedureType
+  sectorId        String?
+  sector          Sector?         @relation(fields: [sectorId], references: [id])
+  subsectorId     String?
+  subsector       Subsector?      @relation(fields: [subsectorId], references: [id])
+  keywords        String[]
+  status          MarketStatus    @default(PUBLIE)
+  currentVersion  Int             @default(1)
+
+  contractingAuthorityId String
+  contractingAuthority   ContractingAuthority @relation(fields: [contractingAuthorityId], references: [id])
+
+  // Financement
+  financingSource FinancingSource?
+  financingDetail String?
+
+  // Montants (section "Montants" — stockés séparément)
+  amountEstimatedExclTax Decimal? @db.Decimal(18, 2)
+  amountEstimatedInclTax Decimal? @db.Decimal(18, 2)
+  amountRead             Decimal? @db.Decimal(18, 2)
+  amountCorrected        Decimal? @db.Decimal(18, 2)
+  amountAfterDiscount    Decimal? @db.Decimal(18, 2)
+  amountAwarded          Decimal? @db.Decimal(18, 2)
+  amountInitial          Decimal? @db.Decimal(18, 2)
+  amountFinal            Decimal? @db.Decimal(18, 2)
+  currency               String   @default("XOF")
+
+  // Localisation
+  regionId   String?
+  region     Region? @relation(fields: [regionId], references: [id])
+  siteDetail String?
+
+  // Calendrier
+  publishedAt        DateTime?
+  withdrawalDeadline DateTime?
+  submissionDeadline DateTime?
+  submissionTime     String?
+  openingAt          DateTime?
+  bidValidityDays    Int?
+  executionDelayDays Int?
+  resultAt           DateTime?
+
+  // Traçabilité source (section 2.1)
+  sourcePublicationId String?
+  sourceDocumentId    String?
+  sourcePage          Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lots              MarketLot[]
+  events            MarketEvent[]
+  versions          MarketVersion[]
+  corrections       Correction[]
+  cancellations     Cancellation[]
+  republications    Republication[]
+  requirements      Requirement[]
+  requiredDocuments MarketRequiredDocument[]
+  reservations      MarketReservation[]
+  bids              Bid[]
+  results           Result[]
+  appeals           Appeal[]
+  reviews           Review[]
+  fundings          Funding[]
+  notices           Notice[]
+  scores            Score[]
+  matchResults      MatchResult[]
+  recommendations   Recommendation[]
+  watchlistItems    WatchlistTarget[]
+  ppmItems          PpmItem[]
+
+  @@index([status])
+  @@index([publishedAt])
+  @@index([submissionDeadline])
+  @@index([contractingAuthorityId])
+  @@index([sectorId])
+}
+
+model MarketLot {
+  id                    String       @id @default(cuid())
+  marketId              String
+  market                Market       @relation(fields: [marketId], references: [id])
+  numero                String
+  objet                 String
+  description           String?
+  montant               Decimal?     @db.Decimal(18, 2)
+  regionId              String?
+  quantite              Float?
+  unite                 String?
+  status                MarketStatus @default(PUBLIE)
+  attributaireCompanyId String?
+  attributaire          Company?     @relation(fields: [attributaireCompanyId], references: [id])
+
+  bids              Bid[]
+  results           Result[]
+  requirements      Requirement[]
+  requiredDocuments MarketRequiredDocument[]
+  reservations      MarketReservation[]
+
+  @@unique([marketId, numero])
+}
+
+// Historique des versions (snapshot complet à chaque événement majeur)
+model MarketVersion {
+  id            String   @id @default(cuid())
+  marketId      String
+  market        Market   @relation(fields: [marketId], references: [id])
+  versionNumber Int
+  snapshot      Json
+  eventId       String?
+  createdAt     DateTime @default(now())
+
+  @@unique([marketId, versionNumber])
+}
+
+// Journal d'événements métier — Annexe B
+enum MarketEventType {
+  MARKET_CREATED
+  MARKET_UPDATED
+  MARKET_CORRECTED
+  MARKET_CANCELLED
+  MARKET_REPUBLISHED
+  MARKET_EXTENDED
+  BID_SUBMITTED
+  BID_EVALUATED
+  RESULT_PUBLISHED
+  RESULT_CORRECTED
+  APPEAL_FILED
+  APPEAL_DECIDED
+  REVIEW_REQUESTED
+  REVIEW_COMPLETED
+  AWARD_PUBLISHED
+  PPM_CREATED
+  PPM_UPDATED
+  OPPORTUNITY_MATCHED
+  ALERT_CREATED
+  ALERT_SENT
+}
+
+model MarketEvent {
+  id               String          @id @default(cuid())
+  marketId         String
+  market           Market          @relation(fields: [marketId], references: [id])
+  type             MarketEventType
+  payload          Json?
+  occurredAt       DateTime
+  sourceDocumentId String?
+  sourceDocument   Document?       @relation(fields: [sourceDocumentId], references: [id])
+  description      String?
+  createdAt        DateTime        @default(now())
+
+  @@index([marketId, occurredAt])
+}
+
+// Avis publié rattaché à un marché (un marché peut avoir plusieurs avis
+// au fil de sa vie : initial, rectificatif publié comme nouvel avis, etc.)
+model Notice {
+  id              String          @id @default(cuid())
+  marketId        String
+  market          Market          @relation(fields: [marketId], references: [id])
+  publicationId   String
+  publication     Publication     @relation(fields: [publicationId], references: [id])
+  documentId      String
+  document        Document        @relation(fields: [documentId], references: [id])
+  pageNumber      Int?
+  publicationType PublicationType
+  publishedAt     DateTime
+  rawExcerpt      String?
+  createdAt       DateTime        @default(now())
+
+  @@index([marketId])
+}
+
+model Correction {
+  id               String    @id @default(cuid())
+  marketId         String
+  market           Market    @relation(fields: [marketId], references: [id])
+  fieldChanged     String
+  beforeValue      String?
+  afterValue       String?
+  effectiveAt      DateTime
+  consequence      String?
+  sourceDocumentId String?
+  sourceDocument   Document? @relation(fields: [sourceDocumentId], references: [id])
+  createdAt        DateTime  @default(now())
+
+  @@index([marketId])
+}
+
+model Cancellation {
+  id                 String    @id @default(cuid())
+  marketId           String
+  market             Market    @relation(fields: [marketId], references: [id])
+  motif              String
+  cancelledAt        DateTime
+  procedureConcerned String?
+  sourceDocumentId   String?
+  sourceDocument     Document? @relation(fields: [sourceDocumentId], references: [id])
+  createdAt          DateTime  @default(now())
+}
+
+model Republication {
+  id               String    @id @default(cuid())
+  marketId         String
+  market           Market    @relation(fields: [marketId], references: [id])
+  originalEventId  String?
+  republishedAt    DateTime
+  sourceDocumentId String?
+  sourceDocument   Document? @relation(fields: [sourceDocumentId], references: [id])
+  createdAt        DateTime  @default(now())
+}
+
+// =====================================================================
+// 5. EXIGENCES & DOCUMENTS REQUIS (sections 9, 10)
+// =====================================================================
+
+enum RequirementType {
+  CHIFFRE_AFFAIRES
+  EXPERIENCE_GENERALE
+  EXPERIENCE_SPECIFIQUE
+  REFERENCES
+  AGREMENT
+  CAPACITE_FINANCIERE
+  CAPACITE_TECHNIQUE
+  PERSONNEL
+  DIPLOMES
+  CERTIFICATIONS
+  EQUIPEMENTS
+  MOYENS_MATERIELS
+  DELAI
+  GARANTIES
+  PIECES_ADMINISTRATIVES
+  DOCUMENTS_TECHNIQUES
+  CONDITIONS_GEOGRAPHIQUES
+  CONDITIONS_RESERVATION
+  AUTRE
+}
+
+model Requirement {
+  id             String          @id @default(cuid())
+  marketId       String
+  market         Market          @relation(fields: [marketId], references: [id])
+  lotId          String?
+  lot            MarketLot?      @relation(fields: [lotId], references: [id])
+  type           RequirementType
+  rawText        String
+  thresholdValue Float?
+  thresholdUnit  String?
+  confidence     Float           @default(0.7)
+  createdAt      DateTime        @default(now())
+}
+
+enum RequiredDocType {
+  RCCM
+  IFU
+  ATTESTATION_FISCALE
+  ATTESTATION_SOCIALE
+  GARANTIE
+  AGREMENT
+  CERTIFICAT
+  REFERENCE
+  ATTESTATION_BONNE_EXECUTION
+  CV
+  DIPLOME
+  CERTIFICAT_TECHNIQUE
+  PIECE_FINANCIERE
+  PIECE_ADMINISTRATIVE
+  AUTRE
+}
+
+model MarketRequiredDocument {
+  id        String          @id @default(cuid())
+  marketId  String
+  market    Market          @relation(fields: [marketId], references: [id])
+  lotId     String?
+  lot       MarketLot?      @relation(fields: [lotId], references: [id])
+  docType   RequiredDocType
+  mandatory Boolean         @default(true)
+  rawText   String?
+}
+
+enum ReservationCategory {
+  PME
+  ENTREPRISES_BURKINABE
+  ENTREPRISES_COMMUNAUTAIRES
+  FEMMES
+  JEUNES
+  CRITERES_SPECIFIQUES
+  CONSULTANTS_BURKINABE_COMMUNAUTAIRES
+  AUTRE
+}
+
+model MarketReservation {
+  id       String              @id @default(cuid())
+  marketId String
+  market   Market              @relation(fields: [marketId], references: [id])
+  lotId    String?
+  lot      MarketLot?          @relation(fields: [lotId], references: [id])
+  category ReservationCategory
+  rawText  String?
+}
+
+// =====================================================================
+// 6. ENTREPRISES (annuaire public) & RÉSOLUTION D'ENTITÉ (sections 13, 43)
+// =====================================================================
+
+model Company {
+  id            String   @id @default(cuid())
+  countryId     String
+  country       Country  @relation(fields: [countryId], references: [id])
+  canonicalName String
+  ifu           String?
+  address       String?
+  regionName    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  aliases        CompanyAlias[]
+  sectors        CompanySector[]
+  licenses       CompanyLicense[]
+  references     CompanyReference[]
+  participations CompanyParticipation[]
+  bids           Bid[]
+  wonLots        MarketLot[]
+  results        Result[]               @relation("ResultWinner")
+  appealsFiled   Appeal[]
+  mergesFrom     CompanyMerge[]         @relation("MergeSource")
+  mergesInto     CompanyMerge[]         @relation("MergeTarget")
+  watchlistItems WatchlistTarget[]
+
+  @@unique([countryId, canonicalName])
+  @@index([ifu])
+}
+
+model CompanyAlias {
+  id               String   @id @default(cuid())
+  companyId        String
+  company          Company  @relation(fields: [companyId], references: [id])
+  aliasName        String
+  sourceDocumentId String?
+  createdAt        DateTime @default(now())
+
+  @@unique([companyId, aliasName])
+}
+
+model CompanyMerge {
+  id              String   @id @default(cuid())
+  sourceCompanyId String
+  sourceCompany   Company  @relation("MergeSource", fields: [sourceCompanyId], references: [id])
+  targetCompanyId String
+  targetCompany   Company  @relation("MergeTarget", fields: [targetCompanyId], references: [id])
+  reason          String?
+  reversible      Boolean  @default(true)
+  performedBy     String?
+  performedAt     DateTime @default(now())
+}
+
+model CompanySector {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+  sectorId  String
+  sector    Sector  @relation(fields: [sectorId], references: [id])
+
+  @@unique([companyId, sectorId])
+}
+
+model CompanyLicense {
+  id               String    @id @default(cuid())
+  companyId        String
+  company          Company   @relation(fields: [companyId], references: [id])
+  label            String
+  expirationDate   DateTime?
+  sourceDocumentId String?
+
+  @@index([companyId])
+}
+
+model CompanyReference {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+  marketTitle String
+  clientName  String?
+  year        Int?
+  amount      Decimal? @db.Decimal(18, 2)
+
+  @@index([companyId])
+}
+
+enum ParticipationRole {
+  BIDDER
+  WINNER
+  LOSER
+  DISQUALIFIED
+}
+
+model CompanyParticipation {
+  id        String            @id @default(cuid())
+  companyId String
+  company   Company           @relation(fields: [companyId], references: [id])
+  marketId  String
+  role      ParticipationRole
+  amount    Decimal?          @db.Decimal(18, 2)
+  createdAt DateTime          @default(now())
+
+  @@index([companyId])
+  @@index([marketId])
+}
+
+// =====================================================================
+// 7. OFFRES, ÉVALUATION, RÉSULTATS (sections 12, 14)
+// =====================================================================
+
+enum RejectionReason {
+  PIECE_ADMINISTRATIVE_ABSENTE
+  AGREMENT_ABSENT
+  AGREMENT_NON_CONFORME
+  CARACTERISTIQUE_TECHNIQUE_NON_CONFORME
+  EXPERIENCE_INSUFFISANTE
+  GARANTIE_INCORRECTE
+  DELAI_NON_CONFORME
+  ERREUR_CALCUL
+  ERREUR_QUANTITE
+  OFFRE_ANORMALEMENT_BASSE
+  OFFRE_ANORMALEMENT_ELEVEE
+  DOCUMENT_NON_FOURNI
+  PERSONNEL_NON_CONFORME
+  REFERENCE_INSUFFISANTE
+  AUTRE
+}
+
+model Bid {
+  id              String           @id @default(cuid())
+  marketId        String
+  market          Market           @relation(fields: [marketId], references: [id])
+  lotId           String?
+  lot             MarketLot?       @relation(fields: [lotId], references: [id])
+  companyId       String
+  company         Company          @relation(fields: [companyId], references: [id])
+  amountRead      Decimal?         @db.Decimal(18, 2)
+  amountCorrected Decimal?         @db.Decimal(18, 2)
+  conformity      Boolean?
+  rank            Int?
+  rejectionReason RejectionReason?
+  rejectionDetail String?
+  submittedAt     DateTime?
+  createdAt       DateTime         @default(now())
+
+  corrections BidCorrection[]
+  evaluation  Evaluation?
+
+  @@index([marketId])
+  @@index([companyId])
+}
+
+model BidCorrection {
+  id          String  @id @default(cuid())
+  bidId       String
+  bid         Bid     @relation(fields: [bidId], references: [id])
+  field       String
+  beforeValue String?
+  afterValue  String?
+  reason      String?
+}
+
+model Evaluation {
+  id           String @id @default(cuid())
+  bidId        String @unique
+  bid          Bid    @relation(fields: [bidId], references: [id])
+  criteriaJson Json?
+  note         Float?
+  threshold    Float?
+}
+
+model Result {
+  id               String     @id @default(cuid())
+  marketId         String
+  market           Market     @relation(fields: [marketId], references: [id])
+  lotId            String?
+  lot              MarketLot? @relation(fields: [lotId], references: [id])
+  numberOfBids     Int?
+  meanAmount       Decimal?   @db.Decimal(18, 2)
+  threshold        Decimal?   @db.Decimal(18, 2)
+  envelope         Decimal?   @db.Decimal(18, 2)
+  winnerCompanyId  String?
+  winnerCompany    Company?   @relation("ResultWinner", fields: [winnerCompanyId], references: [id])
+  awardedAmount    Decimal?   @db.Decimal(18, 2)
+  decision         String?
+  resultAt         DateTime
+  isCorrected      Boolean    @default(false)
+  sourceDocumentId String?
+  sourceDocument   Document?  @relation(fields: [sourceDocumentId], references: [id])
+  createdAt        DateTime   @default(now())
+
+  @@index([marketId])
+  @@index([winnerCompanyId])
+}
+
+// =====================================================================
+// 8. RECOURS & RÉEXAMEN (section 15)
+// =====================================================================
+
+model Appeal {
+  id                 String    @id @default(cuid())
+  marketId           String
+  market             Market    @relation(fields: [marketId], references: [id])
+  requesterCompanyId String?
+  requesterCompany   Company?  @relation(fields: [requesterCompanyId], references: [id])
+  object             String
+  filedAt            DateTime
+  authority          String?
+  resultBefore       String?
+  resultAfter        String?
+  sourceDocumentId   String?
+  sourceDocument     Document? @relation(fields: [sourceDocumentId], references: [id])
+  createdAt          DateTime  @default(now())
+
+  decisions AppealDecision[]
+}
+
+model AppealDecision {
+  id          String   @id @default(cuid())
+  appealId    String
+  appeal      Appeal   @relation(fields: [appealId], references: [id])
+  decision    String
+  decidedAt   DateTime
+  consequence String?
+}
+
+model Review {
+  id          String    @id @default(cuid())
+  marketId    String
+  market      Market    @relation(fields: [marketId], references: [id])
+  requestedAt DateTime?
+  completedAt DateTime?
+  outcome     String?
+}
+
+// =====================================================================
+// 9. FINANCEMENT / PROJETS (section "Financement")
+// =====================================================================
+
+model Funding {
+  id        String          @id @default(cuid())
+  marketId  String
+  market    Market          @relation(fields: [marketId], references: [id])
+  source    FinancingSource
+  donorId   String?
+  donor     Donor?          @relation(fields: [donorId], references: [id])
+  projectId String?
+  project   Project?        @relation(fields: [projectId], references: [id])
+  budget    Decimal?        @db.Decimal(18, 2)
+}
+
+// =====================================================================
+// 10. PPM & AVIS GÉNÉRAUX (section 16)
+// =====================================================================
+
+enum PpmStatus {
+  PLANIFIE
+  AVIS_GENERAL_PUBLIE
+  AVIS_MARCHE_PUBLIE
+  EN_SOUMISSION
+  EN_EVALUATION
+  RESULTAT
+  ATTRIBUE
+}
+
+model PpmPlan {
+  id                     String               @id @default(cuid())
+  contractingAuthorityId String
+  contractingAuthority   ContractingAuthority @relation(fields: [contractingAuthorityId], references: [id])
+  exercice               Int
+  publicationId          String?
+  publication            Publication?         @relation(fields: [publicationId], references: [id])
+  status                 PpmStatus            @default(PLANIFIE)
+  createdAt              DateTime             @default(now())
+
+  items PpmItem[]
+}
+
+model PpmItem {
+  id               String           @id @default(cuid())
+  planId           String
+  plan             PpmPlan          @relation(fields: [planId], references: [id])
+  object           String
+  sectorId         String?
+  sector           Sector?          @relation(fields: [sectorId], references: [id])
+  procedureType    ProcedureType?
+  budget           Decimal?         @db.Decimal(18, 2)
+  periodPlanned    String?
+  financingSource  FinancingSource?
+  projectId        String?
+  project          Project?         @relation(fields: [projectId], references: [id])
+  status           PpmStatus        @default(PLANIFIE)
+  linkedMarketId   String?
+  linkedMarket     Market?          @relation(fields: [linkedMarketId], references: [id])
+  sourceDocumentId String?
+  sourceDocument   Document?        @relation(fields: [sourceDocumentId], references: [id])
+
+  @@index([planId])
+}
+
+model GeneralNotice {
+  id                     String               @id @default(cuid())
+  contractingAuthorityId String
+  contractingAuthority   ContractingAuthority @relation(fields: [contractingAuthorityId], references: [id])
+  exercice               Int
+  publicationId          String
+  publication            Publication          @relation(fields: [publicationId], references: [id])
+  publishedAt            DateTime
+}
+
+// =====================================================================
+// 11. SAAS — TENANTS, UTILISATEURS, RBAC (section 17, 49)
+// =====================================================================
+
+enum TenantRole {
+  OWNER
+  ADMIN
+  ANALYST
+  COLLABORATOR
+  READONLY
+}
+
+enum PlanTier {
+  FREE
+  PRO
+  BUSINESS
+  ENTERPRISE
+}
+
+model Tenant {
+  id               String   @id @default(cuid())
+  countryId        String
+  country          Country  @relation(fields: [countryId], references: [id])
+  name             String // raison sociale
+  sectorId         String?
+  regionName       String?
+  size             String?
+  revenueBand      String?
+  experienceYears  Int?
+  preferences      Json?
+  targetCategories String[]
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  members         TenantMember[]
+  sectors         TenantSector[]
+  licenses        TenantLicense[]
+  references      TenantReference[]
+  equipment       TenantEquipment[]
+  personnel       TenantPersonnel[]
+  certifications  TenantCertification[]
+  zones           TenantZone[]
+  documents       TenantDocument[]
+  watchlists      Watchlist[]
+  alerts          Alert[]
+  scores          Score[]
+  matchResults    MatchResult[]
+  recommendations Recommendation[]
+  subscription    Subscription?
+  folders         SubmissionFolder[]
+  aiConversations AiConversation[]
+  auditLogs       AuditLog[]
+
+  @@unique([countryId, name])
+}
+
+model TenantSector {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  sectorId String
+  sector   Sector @relation(fields: [sectorId], references: [id])
+
+  @@unique([tenantId, sectorId])
+}
+
+model TenantLicense {
+  id             String    @id @default(cuid())
+  tenantId       String
+  tenant         Tenant    @relation(fields: [tenantId], references: [id])
+  label          String
+  expirationDate DateTime?
+}
+
+model TenantReference {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  marketTitle String
+  clientName  String?
+  year        Int?
+  amount      Decimal? @db.Decimal(18, 2)
+}
+
+model TenantEquipment {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  label    String
+  quantity Int?
+}
+
+model TenantPersonnel {
+  id       String  @id @default(cuid())
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  role     String
+  count    Int?
+  diplomas String?
+}
+
+model TenantCertification {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  label    String
+}
+
+model TenantZone {
+  id         String @id @default(cuid())
+  tenantId   String
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  regionName String
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  phone           String?
+  passwordHash    String
+  fullName        String
+  emailVerifiedAt DateTime?
+  phoneVerifiedAt DateTime?
+  isPlatformAdmin Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  memberships     TenantMember[]
+  aiConversations AiConversation[]
+  auditLogs       AuditLog[]
+  loginEvents     LoginEvent[]
+  validations     DataQualityCheck[]
+}
+
+model TenantMember {
+  id        String     @id @default(cuid())
+  tenantId  String
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  userId    String
+  user      User       @relation(fields: [userId], references: [id])
+  role      TenantRole @default(COLLABORATOR)
+  invitedAt DateTime   @default(now())
+  joinedAt  DateTime?
+
+  @@unique([tenantId, userId])
+}
+
+model LoginEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  ipAddress String?
+  userAgent String?
+  success   Boolean
+  createdAt DateTime @default(now())
+}
+
+// =====================================================================
+// 12. VEILLE — WATCHLISTS, ALERTES, NOTIFICATIONS (sections 30, 31, 83)
+// =====================================================================
+
+enum WatchlistType {
+  MARKET
+  ORGANIZATION
+  COMPANY
+  SECTOR
+  PROJECT
+  REGION
+  KEYWORD
+}
+
+model Watchlist {
+  id        String        @id @default(cuid())
+  tenantId  String
+  tenant    Tenant        @relation(fields: [tenantId], references: [id])
+  type      WatchlistType
+  keyword   String?
+  createdAt DateTime      @default(now())
+
+  targets WatchlistTarget[]
+}
+
+// table de jonction générique — cible marché ou entreprise
+model WatchlistTarget {
+  id          String    @id @default(cuid())
+  watchlistId String
+  watchlist   Watchlist @relation(fields: [watchlistId], references: [id])
+  marketId    String?
+  market      Market?   @relation(fields: [marketId], references: [id])
+  companyId   String?
+  company     Company?  @relation(fields: [companyId], references: [id])
+}
+
+enum AlertType {
+  NEW_MATCHING_MARKET
+  DEADLINE_APPROACHING
+  CORRECTION
+  CANCELLATION
+  RESULT
+  AWARD
+  APPEAL
+  REVIEW
+  PPM_MATCH
+  DOCUMENT_EXPIRING
+  NEW_TREND
+}
+
+enum AlertPriority {
+  CRITIQUE
+  IMPORTANTE
+  NORMALE
+  INFORMATION
+}
+
+model Alert {
+  id              String        @id @default(cuid())
+  tenantId        String
+  tenant          Tenant        @relation(fields: [tenantId], references: [id])
+  type            AlertType
+  priority        AlertPriority @default(NORMALE)
+  title           String
+  body            String?
+  relatedMarketId String?
+  dedupeKey       String?
+  readAt          DateTime?
+  createdAt       DateTime      @default(now())
+
+  notifications Notification[]
+
+  @@index([tenantId, createdAt])
+  @@index([dedupeKey])
+}
+
+enum NotificationChannel {
+  APP
+  EMAIL
+  WHATSAPP
+  PUSH
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+model Notification {
+  id      String              @id @default(cuid())
+  alertId String
+  alert   Alert               @relation(fields: [alertId], references: [id])
+  channel NotificationChannel
+  status  NotificationStatus  @default(QUEUED)
+  sentAt  DateTime?
+  error   String?
+}
+
+// =====================================================================
+// 13. SCORING & RECOMMANDATIONS (sections 18, 19, 73)
+// =====================================================================
+
+model ScoreConfig {
+  id            String   @id @default(cuid())
+  version       String   @unique // ex "1.0"
+  weights       Json // structure section 73
+  isActive      Boolean  @default(false)
+  effectiveFrom DateTime @default(now())
+  createdBy     String?
+  createdAt     DateTime @default(now())
+}
+
+model Score {
+  id           String   @id @default(cuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  marketId     String
+  market       Market   @relation(fields: [marketId], references: [id])
+  scoreVersion String
+  pertinence   Float
+  eligibilite  Float
+  attractivite Float
+  global       Float
+  factors      Json
+  computedAt   DateTime @default(now())
+
+  @@unique([tenantId, marketId, scoreVersion])
+  @@index([tenantId, global])
+}
+
+enum MatchVerdict {
+  COMPATIBLE
+  PROBABLEMENT_COMPATIBLE
+  A_VERIFIER
+  INCOMPATIBLE
+}
+
+model MatchResult {
+  id         String       @id @default(cuid())
+  tenantId   String
+  tenant     Tenant       @relation(fields: [tenantId], references: [id])
+  marketId   String
+  market     Market       @relation(fields: [marketId], references: [id])
+  verdict    MatchVerdict
+  reasons    Json
+  computedAt DateTime     @default(now())
+
+  @@unique([tenantId, marketId])
+}
+
+model Recommendation {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  marketId    String
+  market      Market   @relation(fields: [marketId], references: [id])
+  rank        Int
+  reason      Json
+  generatedAt DateTime @default(now())
+
+  @@index([tenantId, rank])
+}
+
+// =====================================================================
+// 14. ABONNEMENTS & PAIEMENTS (sections 50, 51)
+// =====================================================================
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+}
+
+model Subscription {
+  id               String             @id @default(cuid())
+  tenantId         String             @unique
+  tenant           Tenant             @relation(fields: [tenantId], references: [id])
+  plan             PlanTier           @default(FREE)
+  status           SubscriptionStatus @default(TRIAL)
+  currentPeriodEnd DateTime?
+  gracePeriodEnd   DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  payments Payment[]
+}
+
+enum PaymentProvider {
+  MOBILE_MONEY
+  CARD
+  MANUAL
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id             String          @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription    @relation(fields: [subscriptionId], references: [id])
+  provider       PaymentProvider
+  amount         Decimal         @db.Decimal(18, 2)
+  currency       String          @default("XOF")
+  status         PaymentStatus   @default(PENDING)
+  externalRef    String?
+  receiptUrl     String?
+  paidAt         DateTime?
+  createdAt      DateTime        @default(now())
+}
+
+// =====================================================================
+// 15. DOSSIERS DE SOUMISSION (sections 81, 82)
+// =====================================================================
+
+enum DocumentLifecycleStatus {
+  VALID
+  EXPIRING_SOON
+  EXPIRED
+  MISSING
+  UNVERIFIED
+}
+
+model TenantDocument {
+  id             String                  @id @default(cuid())
+  tenantId       String
+  tenant         Tenant                  @relation(fields: [tenantId], references: [id])
+  docType        RequiredDocType
+  label          String?
+  fileUrl        String?
+  expirationDate DateTime?
+  status         DocumentLifecycleStatus @default(UNVERIFIED)
+  confidence     Float?
+  lastVerifiedAt DateTime?
+  createdAt      DateTime                @default(now())
+
+  folderDocuments FolderDocument[]
+}
+
+model SubmissionFolder {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  marketId  String
+  status    String   @default("OUVERT")
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  checklist ChecklistItem[]
+  documents FolderDocument[]
+
+  @@unique([tenantId, marketId])
+}
+
+model ChecklistItem {
+  id       String           @id @default(cuid())
+  folderId String
+  folder   SubmissionFolder @relation(fields: [folderId], references: [id])
+  label    String
+  done     Boolean          @default(false)
+  dueDate  DateTime?
+}
+
+model FolderDocument {
+  id               String                  @id @default(cuid())
+  folderId         String
+  folder           SubmissionFolder        @relation(fields: [folderId], references: [id])
+  requiredDocType  RequiredDocType?
+  tenantDocumentId String?
+  tenantDocument   TenantDocument?         @relation(fields: [tenantDocumentId], references: [id])
+  status           DocumentLifecycleStatus @default(MISSING)
+}
+
+// =====================================================================
+// 16. ASSISTANT IA (sections 28, 89, 90)
+// =====================================================================
+
+model AiConversation {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  title     String?
+  createdAt DateTime @default(now())
+
+  messages AiMessage[]
+}
+
+enum AiRole {
+  USER
+  ASSISTANT
+}
+
+model AiMessage {
+  id             String         @id @default(cuid())
+  conversationId String
+  conversation   AiConversation @relation(fields: [conversationId], references: [id])
+  role           AiRole
+  content        String
+  confidence     String? // "élevée" | "moyenne" | "faible"
+  createdAt      DateTime       @default(now())
+
+  sources AiSource[]
+}
+
+model AiSource {
+  id         String    @id @default(cuid())
+  messageId  String
+  message    AiMessage @relation(fields: [messageId], references: [id])
+  entityType String // "market" | "document" | "result" ...
+  entityId   String
+  excerpt    String?
+}
+
+// =====================================================================
+// 17. QUALITÉ DES DONNÉES & AUDIT (sections 44, 45, 46, 60, 61, 93)
+// =====================================================================
+
+enum ExtractionJobStage {
+  DOWNLOAD
+  OCR
+  PARSE
+  CLASSIFY
+  EXTRACT
+  VALIDATE
+}
+
+enum ExtractionJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  NEEDS_REVIEW
+}
+
+model ExtractionJob {
+  id           String              @id @default(cuid())
+  documentId   String
+  document     Document            @relation(fields: [documentId], references: [id])
+  stage        ExtractionJobStage
+  status       ExtractionJobStatus @default(PENDING)
+  attempts     Int                 @default(0)
+  errorMessage String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime            @default(now())
+
+  @@index([documentId])
+  @@index([status])
+}
+
+enum DataQualityStatus {
+  EXTRAIT_AUTOMATIQUEMENT
+  VALIDE
+  CORRIGE
+  INCERTAIN
+  REJETE
+}
+
+model DataQualityCheck {
+  id               String            @id @default(cuid())
+  entityType       String
+  entityId         String
+  field            String
+  status           DataQualityStatus @default(EXTRAIT_AUTOMATIQUEMENT)
+  confidence       Float?
+  extractionMethod String?
+  validatedById    String?
+  validatedBy      User?             @relation(fields: [validatedById], references: [id])
+  validatedAt      DateTime?
+  createdAt        DateTime          @default(now())
+
+  @@index([entityType, entityId])
+  @@index([status])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  tenantId    String?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
+  actorUserId String?
+  actorUser   User?    @relation(fields: [actorUserId], references: [id])
+  action      String
+  entityType  String
+  entityId    String
+  before      Json?
+  after       Json?
+  occurredAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([occurredAt])
+}
+
+model AnalyticsSnapshot {
+  id           String   @id @default(cuid())
+  dimension    String // ex "sector", "region", "authority"
+  dimensionKey String
+  metric       String // ex "market_count", "total_amount"
+  period       String // ex "2026-W35", "2026-08"
+  value        Decimal  @db.Decimal(18, 2)
+  computedAt   DateTime @default(now())
+
+  @@unique([dimension, dimensionKey, metric, period])
+  @@index([dimension, period])
+}

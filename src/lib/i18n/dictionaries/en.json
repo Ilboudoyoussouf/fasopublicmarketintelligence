@@ -1,0 +1,33 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "opportunities": "Opportunities",
+    "markets": "Tenders",
+    "results": "Results",
+    "organizations": "Contracting authorities",
+    "companies": "Companies",
+    "analytics": "Analytics",
+    "ppm": "Procurement plans",
+    "watch": "Monitoring",
+    "folders": "Bid folders",
+    "assistant": "AI Assistant",
+    "documents": "Documents",
+    "myCompany": "My company",
+    "account": "Account",
+    "admin": "Administration"
+  },
+  "common": {
+    "follow": "Follow",
+    "following": "Following",
+    "compare": "Compare",
+    "addToFolder": "Add to folder",
+    "viewSource": "View source",
+    "loading": "Loading…",
+    "noData": "No data",
+    "save": "Save",
+    "cancel": "Cancel"
+  },
+  "compliance": {
+    "footer": "Information is sourced from official publications and restructured for monitoring, research and analysis purposes. Scores and recommendations are indicative only and do not constitute an administrative decision, legal advice, or a guarantee of eligibility or success. The official publication remains the reference in case of discrepancy."
+  }
+}
