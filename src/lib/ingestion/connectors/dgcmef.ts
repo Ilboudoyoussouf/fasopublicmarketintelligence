@@ -13,7 +13,9 @@ import type { SourceConnector, DiscoveredPublication, DiscoveredDocument } from 
 // production, ajuster les sélecteurs CSS ci-dessous à la structure réelle
 // de la page si elle diffère.
 
-const LISTING_PATH = "/index.php/revue-des-marches-publics";
+// Chemin réel confirmé par l'utilisateur (le chemin deviné initialement,
+// /index.php/revue-des-marches-publics, retournait HTTP 404).
+const LISTING_PATH = "/index.php/fr/appels-d-offre";
 
 export type ListingFetcher = () => Promise<string>;
 
