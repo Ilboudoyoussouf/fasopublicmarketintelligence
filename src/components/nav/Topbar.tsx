@@ -45,7 +45,7 @@ export function Topbar({
 
       {tenants.length > 1 && (
         <div className="relative">
-          <button type="button" onClick={() => setTenantMenuOpen((v) => !v)} className="flex items-center gap-1 rounded-md border border-line px-2 py-1.5 text-xs text-ink-muted hover:bg-paper-sunken">
+          <button type="button" onClick={() => setTenantMenuOpen((v) => !v)} className="flex items-center gap-1 rounded-md border border-line px-2 py-1.5 text-xs text-ink-muted hover:bg-surface-elevated">
             {activeTenant?.name ?? "Organisation"}
             <ChevronDown className="h-3 w-3" />
           </button>
@@ -59,7 +59,7 @@ export function Topbar({
                     setTenantMenuOpen(false);
                     router.refresh();
                   }}
-                  className={cn("block w-full px-3 py-1.5 text-left text-xs hover:bg-paper-sunken", t.id === activeTenantId && "font-semibold text-brand")}
+                  className={cn("block w-full px-3 py-1.5 text-left text-xs hover:bg-surface-elevated", t.id === activeTenantId && "font-semibold text-brand")}
                 >
                   {t.name}
                 </button>
@@ -69,7 +69,7 @@ export function Topbar({
         </div>
       )}
 
-      <Link href="/veille/alertes" className="relative rounded-md p-2 text-ink-muted hover:bg-paper-sunken" aria-label="Notifications">
+      <Link href="/veille/alertes" className="relative rounded-md p-2 text-ink-muted hover:bg-surface-elevated" aria-label="Notifications">
         <Bell className="h-4.5 w-4.5" />
         {unreadAlerts > 0 && (
           <span className="absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-critical px-1 text-[10px] font-medium text-white">
@@ -78,12 +78,12 @@ export function Topbar({
         )}
       </Link>
 
-      <Link href="/aide" className="rounded-md p-2 text-ink-muted hover:bg-paper-sunken" aria-label="Aide">
+      <Link href="/aide" className="rounded-md p-2 text-ink-muted hover:bg-surface-elevated" aria-label="Aide">
         <HelpCircle className="h-4.5 w-4.5" />
       </Link>
 
       <div className="relative">
-        <button type="button" onClick={() => setMenuOpen((v) => !v)} className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-paper-sunken">
+        <button type="button" onClick={() => setMenuOpen((v) => !v)} className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-surface-elevated">
           <div className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-soft text-xs font-semibold text-brand">
             {userName.slice(0, 1).toUpperCase()}
           </div>
@@ -94,9 +94,9 @@ export function Topbar({
         </button>
         {menuOpen && (
           <div className="absolute right-0 z-40 mt-1 w-48 rounded-md border border-line bg-paper py-1 shadow-lg">
-            <Link href="/compte/profil" className="block px-3 py-1.5 text-xs text-ink-muted hover:bg-paper-sunken">Profil utilisateur</Link>
-            <Link href="/compte/abonnement" className="block px-3 py-1.5 text-xs text-ink-muted hover:bg-paper-sunken">Abonnement</Link>
-            <Link href="/compte/securite" className="block px-3 py-1.5 text-xs text-ink-muted hover:bg-paper-sunken">Sécurité</Link>
+            <Link href="/compte/profil" className="block px-3 py-1.5 text-xs text-ink-muted hover:bg-surface-elevated">Profil utilisateur</Link>
+            <Link href="/compte/abonnement" className="block px-3 py-1.5 text-xs text-ink-muted hover:bg-surface-elevated">Abonnement</Link>
+            <Link href="/compte/securite" className="block px-3 py-1.5 text-xs text-ink-muted hover:bg-surface-elevated">Sécurité</Link>
             <button onClick={() => signOutAction()} className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs text-critical hover:bg-critical-soft">
               <LogOut className="h-3.5 w-3.5" /> Déconnexion
             </button>

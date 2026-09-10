@@ -93,7 +93,7 @@ export default async function DashboardPage() {
                 data.upcomingDeadlines.map((s) => {
                   const d = daysUntil(s.market.submissionDeadline);
                   return (
-                    <Link key={s.id} href={`/marches/${s.marketId}`} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 hover:bg-paper-sunken">
+                    <Link key={s.id} href={`/marches/${s.marketId}`} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 hover:bg-surface-elevated">
                       <span className="min-w-0 truncate text-xs text-ink">{s.market.title}</span>
                       <Badge tone={d !== null && d <= 3 ? "critical" : d !== null && d <= 7 ? "warning" : "neutral"}>{d}j</Badge>
                     </Link>

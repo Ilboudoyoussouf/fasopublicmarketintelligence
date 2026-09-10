@@ -290,7 +290,7 @@ function Chip({ active, onClick, children }: { active?: boolean; onClick?: () =>
       onClick={onClick}
       className={cn(
         "rounded-full border px-2.5 py-1 text-xs",
-        active ? "border-brand bg-brand-soft text-brand" : "border-line text-ink-muted hover:bg-paper-sunken",
+        active ? "border-brand bg-brand-soft text-brand" : "border-line text-ink-muted hover:bg-surface-elevated",
       )}
     >
       {children}

@@ -47,7 +47,7 @@ export function MobileNav() {
                 <ul className="grid grid-cols-2 gap-1">
                   {group.items.map((item) => (
                     <li key={item.href}>
-                      <Link href={item.href} onClick={() => setOpen(false)} className="block rounded-md px-2 py-1.5 text-sm text-ink-muted hover:bg-paper-sunken">
+                      <Link href={item.href} onClick={() => setOpen(false)} className="block rounded-md px-2 py-1.5 text-sm text-ink-muted hover:bg-surface-elevated">
                         {item.label}
                       </Link>
                     </li>

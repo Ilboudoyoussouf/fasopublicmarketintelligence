@@ -13,7 +13,7 @@ type MarketRowData = Market & {
 
 export function MarketRow({ market, score }: { market: MarketRowData; score?: number }) {
   return (
-    <Link href={`/marches/${market.id}`} className="group block rounded-xl border border-line bg-paper p-3.5 transition-all hover:border-brand/40 hover:shadow-[0_2px_12px_rgba(22,24,26,0.06)]">
+    <Link href={`/marches/${market.id}`} className="group block rounded-[var(--radius-md)] border border-line bg-paper p-3.5 transition-colors duration-150 hover:bg-surface-elevated">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="mb-1.5 flex flex-wrap items-center gap-1.5">

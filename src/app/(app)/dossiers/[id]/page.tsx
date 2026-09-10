@@ -34,7 +34,7 @@ export default async function DossierDetailPage({ params }: { params: Promise<{ 
         <CardBody className="space-y-1.5">
           {folder.checklist.map((item) => (
             <form key={item.id} action={toggleChecklistItemAction.bind(null, item.id, folder.id)}>
-              <button type="submit" className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-paper-sunken">
+              <button type="submit" className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-surface-elevated">
                 <span className={`flex h-4 w-4 items-center justify-center rounded border ${item.done ? "border-success bg-success text-white" : "border-line-strong"}`}>
                   {item.done && <Check className="h-3 w-3" />}
                 </span>

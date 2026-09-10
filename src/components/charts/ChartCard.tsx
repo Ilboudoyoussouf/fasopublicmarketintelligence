@@ -36,7 +36,7 @@ export function ChartCard({
         </div>
         <div className="flex items-center gap-2">
           {action}
-          <button type="button" className="rounded-md p-1.5 text-ink-faint hover:bg-paper-sunken" aria-label="Exporter">
+          <button type="button" className="rounded-md p-1.5 text-ink-faint hover:bg-surface-elevated" aria-label="Exporter">
             <Download className="h-3.5 w-3.5" />
           </button>
         </div>
