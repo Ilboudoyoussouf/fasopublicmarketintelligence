@@ -12,6 +12,14 @@ function scoreBarTone(value: number) {
   return "bg-critical";
 }
 
+// Étiquette qualitative — le score doit toujours se lire d'un coup d'œil, jamais comme un simple nombre (§13).
+export function scoreLabel(value: number) {
+  if (value >= 75) return "Très favorable";
+  if (value >= 50) return "Favorable";
+  if (value >= 25) return "Peu favorable";
+  return "Défavorable";
+}
+
 export function ScoreRow({ label, value }: { label: string; value: number }) {
   return (
     <div className="space-y-1">
@@ -44,9 +52,15 @@ export function ScoreBlock({
 }) {
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-ink-muted">Score global</span>
-        <span className={cn("text-2xl font-bold", scoreTone(global))}>{Math.round(global)}<span className="text-sm font-normal text-ink-faint">/100</span></span>
+      <div className="space-y-1.5">
+        <div className="flex items-end justify-between">
+          <span className="text-xs font-medium text-ink-muted">Score global</span>
+          <span className={cn("text-2xl font-bold leading-none", scoreTone(global))}>{Math.round(global)}<span className="text-sm font-normal text-ink-faint">/100</span></span>
+        </div>
+        <div className="h-2 w-full overflow-hidden rounded-full bg-line">
+          <div className={cn("h-full rounded-full", scoreBarTone(global))} style={{ width: `${Math.max(0, Math.min(100, global))}%` }} />
+        </div>
+        <p className={cn("text-xs font-semibold", scoreTone(global))}>{scoreLabel(global)}</p>
       </div>
       <div className="space-y-2">
         <ScoreRow label="Pertinence" value={pertinence} />

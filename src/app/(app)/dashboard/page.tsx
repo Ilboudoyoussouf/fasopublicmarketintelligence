@@ -32,13 +32,37 @@ export default async function DashboardPage() {
         <p className="text-sm text-ink-muted">{today} · voici votre synthèse de la commande publique.</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Nouvelles opportunités" value={String(data.kpis.newOpportunities)} period="7 derniers jours" source="DGCMEF" />
-        <StatCard label="Opportunités correspondantes" value={String(data.kpis.matchingCount)} period="profil actuel" source="Moteur de matching" />
-        <StatCard label="Échéances < 7 jours" value={String(data.kpis.deadlineSoon)} deltaLabel="parmi vos opportunités" source="Calendrier" />
+      {/* Première ligne — 4 indicateurs maximum, chacun répond à une question (§10) */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard
+          label="Opportunités pertinentes"
+          value={String(data.kpis.matchingCount)}
+          deltaLabel="profil actuel · moteur de matching"
+        />
+        <StatCard
+          label="Nouvelles aujourd'hui"
+          value={String(data.kpis.newToday)}
+          delta={data.kpis.newOpportunitiesDelta}
+          deltaLabel="vs semaine précédente"
+          sparkline={data.kpis.newOpportunitiesSparkline}
+        />
+        <StatCard
+          label="Échéances < 7 jours"
+          value={String(data.kpis.deadlineSoon)}
+          deltaLabel="parmi vos opportunités pertinentes"
+        />
+        <StatCard
+          label="Valeur estimée des opportunités"
+          value={formatFcfa(data.kpis.totalValue)}
+          delta={data.kpis.totalValueDelta}
+          deltaLabel="vs période précédente"
+        />
+      </div>
+
+      {/* Contexte secondaire — de moindre priorité visuelle */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <StatCard label="Marchés suivis" value={String(data.kpis.watchedCount)} source="Watchlists" />
         <StatCard label="Résultats récents" value={String(data.kpis.recentResults)} period="14 derniers jours" source="DGCMEF" />
-        <StatCard label="Valeur des opportunités" value={formatFcfa(data.kpis.totalValue)} period="score ≥ 50" source="Moteur de scoring" />
         <StatCard label="Marchés planifiés (PPM)" value={String(data.kpis.planifiedCount)} source="Plans de passation" />
         <StatCard label="Alertes critiques" value={String(data.kpis.criticalAlerts)} source="Centre d'alertes" />
       </div>
@@ -78,7 +102,7 @@ export default async function DashboardPage() {
               {data.topAuthorities.length > 0 ? <SimpleBarChart data={data.topAuthorities} xKey="name" yKey="count" /> : <StateNotice kind="empty" title="Aucune donnée" />}
             </ChartCard>
             <ChartCard title="Secteurs" period="cumul" source="DGCMEF" height={220}>
-              {data.topSectors.length > 0 ? <SimpleBarChart data={data.topSectors} xKey="name" yKey="count" color="#2563eb" /> : <StateNotice kind="empty" title="Aucune donnée" />}
+              {data.topSectors.length > 0 ? <SimpleBarChart data={data.topSectors} xKey="name" yKey="count" highlightKey={data.topSectors[0]?.name} /> : <StateNotice kind="empty" title="Aucune donnée" />}
             </ChartCard>
           </div>
         </div>

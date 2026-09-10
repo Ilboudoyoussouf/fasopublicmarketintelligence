@@ -1,8 +1,11 @@
 import { cn } from "@/lib/utils";
 import { Card, CardBody } from "@/components/ui/Card";
 import { ArrowDownRight, ArrowUpRight } from "lucide-react";
+import { Sparkline } from "@/components/charts/Charts";
 
 // Une carte doit répondre à une question, avec période et source — section 56.
+// Format KPI de la charte graphique (§10) : valeur, variation, période de
+// comparaison, tendance, contexte.
 export function StatCard({
   label,
   value,
@@ -10,6 +13,7 @@ export function StatCard({
   delta,
   deltaLabel,
   source,
+  sparkline,
   className,
 }: {
   label: string;
@@ -18,13 +22,14 @@ export function StatCard({
   delta?: number; // positif = favorable (vert), négatif = attention
   deltaLabel?: string;
   source?: string;
+  sparkline?: number[];
   className?: string;
 }) {
   return (
     <Card className={className}>
       <CardBody className="space-y-1.5">
-        <p className="text-xs font-medium text-ink-muted">{label}</p>
-        <p className="num text-2xl font-semibold tracking-tight text-ink">{value}</p>
+        <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">{label}</p>
+        <p className="num text-2xl font-bold tracking-tight text-ink">{value}</p>
         <div className="flex items-center gap-2 text-xs">
           {delta !== undefined && (
             <span className={cn("num inline-flex items-center gap-0.5 font-medium", delta >= 0 ? "text-success" : "text-critical")}>
@@ -35,6 +40,7 @@ export function StatCard({
           )}
           {deltaLabel ? <span className="text-ink-faint">{deltaLabel}</span> : null}
         </div>
+        {sparkline && sparkline.length > 1 && <Sparkline data={sparkline} />}
         {(period || source) && (
           <p className="pt-1 text-[11px] text-ink-faint">
             {period}

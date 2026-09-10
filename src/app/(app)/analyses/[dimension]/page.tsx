@@ -136,7 +136,7 @@ async function renderDimension(dimension: string, updatedAt: string) {
       const d = await getReussiteData();
       return (
         <ChartCard title="Taux de réussite par entreprise (≥ 2 participations)" period="cumul" unit="%" source="DGCMEF" updatedAt={updatedAt}>
-          {d.length > 0 ? <SimpleBarChart data={d} xKey="name" yKey="taux" color="#15803d" /> : <StateNotice kind="empty" title="Historique insuffisant" />}
+          {d.length > 0 ? <SimpleBarChart data={d} xKey="name" yKey="taux" color="#35c47a" /> : <StateNotice kind="empty" title="Historique insuffisant" />}
         </ChartCard>
       );
     }
