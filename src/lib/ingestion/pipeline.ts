@@ -11,6 +11,7 @@ import { findMatchingMarket, registerBlockOrDetectDuplicate } from "@/lib/ingest
 import {
   ExtractionJobStage, ExtractionJobStatus, DataQualityStatus,
   PublicationKind, MarketStatus, ProcedureType, PublicationType,
+  RequirementType, RequiredDocType,
 } from "@prisma/client";
 
 function getConnectorFor(sourceName: string, baseUrl: string): SourceConnector {
@@ -170,6 +171,10 @@ export async function processDocument(documentId: string) {
           contractingAuthorityId: authority.id,
           amountEstimatedExclTax: candidate.amountExclTax,
           submissionDeadline: candidate.submissionDeadline,
+          withdrawalDeadline: candidate.withdrawalDeadline,
+          openingAt: candidate.openingAt,
+          bidValidityDays: candidate.bidValidityDays,
+          executionDelayDays: candidate.executionDelayDays,
           publishedAt: document.publication.publishedAt,
           sourcePublicationId: document.publicationId,
           sourceDocumentId: documentId,
@@ -184,7 +189,49 @@ export async function processDocument(documentId: string) {
       });
       await prisma.marketEvent.create({ data: { marketId: market.id, type: "MARKET_CREATED", occurredAt: document.publication.publishedAt, sourceDocumentId: documentId } });
 
-      for (const [field, confidence] of [["amountEstimatedExclTax", candidate.amountExclTax !== null], ["submissionDeadline", candidate.submissionDeadline !== null], ["reference", candidate.reference !== null]] as [string, boolean][]) {
+      // Exigences, documents requis et lots — extraits par le même passage
+      // heuristique (parser.ts), jamais laissés de côté (l'utilisateur doit
+      // voir « toutes les informations », pas seulement les champs de tête).
+      if (candidate.requirements.length > 0) {
+        await prisma.requirement.createMany({
+          data: candidate.requirements.map((r) => ({
+            marketId: market.id,
+            type: r.type as RequirementType,
+            rawText: r.rawText,
+            thresholdValue: r.thresholdValue,
+            thresholdUnit: r.thresholdUnit,
+            confidence: r.confidence,
+          })),
+        });
+      }
+      if (candidate.requiredDocuments.length > 0) {
+        await prisma.marketRequiredDocument.createMany({
+          data: candidate.requiredDocuments.map((d) => ({
+            marketId: market.id,
+            docType: d.docType as RequiredDocType,
+            mandatory: d.mandatory,
+            rawText: d.rawText,
+          })),
+        });
+      }
+      if (candidate.lots.length > 0) {
+        await prisma.marketLot.createMany({
+          data: candidate.lots.map((l) => ({
+            marketId: market.id,
+            numero: l.numero,
+            objet: l.objet,
+            montant: l.montant,
+          })),
+        });
+      }
+
+      for (const [field, confidence] of [
+        ["amountEstimatedExclTax", candidate.amountExclTax !== null],
+        ["submissionDeadline", candidate.submissionDeadline !== null],
+        ["reference", candidate.reference !== null],
+        ["requirements", candidate.requirements.length > 0],
+        ["requiredDocuments", candidate.requiredDocuments.length > 0],
+      ] as [string, boolean][]) {
         await prisma.dataQualityCheck.create({
           data: {
             entityType: "Market", entityId: market.id, field,
@@ -212,9 +259,25 @@ export async function processDocument(documentId: string) {
 
 export async function runFullIngestion(sourceId: string) {
   const { documentIds, ...discoverStats } = await discoverSource(sourceId);
+
+  // Reprise sur échec (section 94) : un document qui n'a jamais atteint un
+  // statut terminal (téléchargement interrompu, PDF pas encore extrait…)
+  // reste sinon bloqué indéfiniment — seuls les documents nouvellement
+  // découverts étaient retentés jusqu'ici. On le réintègre dans le lot à
+  // traiter à chaque passage du robot, sans jamais le dupliquer.
+  const stalled = await prisma.document.findMany({
+    where: {
+      publication: { sourceId },
+      extractionStatus: { in: ["PENDING", "DOWNLOADED", "OCR_DONE", "PARSED", "CLASSIFIED"] },
+      id: { notIn: documentIds },
+    },
+    select: { id: true },
+  });
+
+  const allDocumentIds = [...documentIds, ...stalled.map((d) => d.id)];
   const results = [];
-  for (const id of documentIds) {
+  for (const id of allDocumentIds) {
     results.push({ documentId: id, ...(await processDocument(id)) });
   }
-  return { ...discoverStats, results };
+  return { ...discoverStats, retriedStalled: stalled.length, results };
 }

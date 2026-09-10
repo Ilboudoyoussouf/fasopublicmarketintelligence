@@ -14,7 +14,8 @@ export function IngestButton({ sourceId }: { sourceId: string }) {
     startTransition(async () => {
       const result = await triggerIngestionAction(sourceId);
       if (result.ok) {
-        setMessage(`${result.publicationsScanned} publication(s) analysée(s) · ${result.newDocuments} nouveau(x) document(s).`);
+        const retried = result.retriedStalled ? ` · ${result.retriedStalled} document(s) en attente relancé(s)` : "";
+        setMessage(`${result.publicationsScanned} publication(s) analysée(s) · ${result.newDocuments} nouveau(x) document(s)${retried}.`);
       } else {
         setMessage(`Échec : ${result.error}`);
       }

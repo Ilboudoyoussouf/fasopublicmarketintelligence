@@ -59,15 +59,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ mode: "debug", ranAt: new Date().toISOString(), diagnostics });
   }
 
-  const results: { source: string; ok: boolean; publicationsScanned?: number; newDocuments?: number; republishedBlocks?: number; error?: string }[] = [];
+  const results: { source: string; ok: boolean; publicationsScanned?: number; newDocuments?: number; retriedStalled?: number; republishedBlocks?: number; error?: string }[] = [];
 
   for (const source of sources) {
     try {
       const result = await runFullIngestion(source.id);
       const republishedBlocks = result.results.reduce((sum, r) => sum + ("republishedBlocks" in r ? (r.republishedBlocks ?? 0) : 0), 0);
-      results.push({ source: source.name, ok: true, publicationsScanned: result.publicationsScanned, newDocuments: result.newDocuments, republishedBlocks });
+      results.push({ source: source.name, ok: true, publicationsScanned: result.publicationsScanned, newDocuments: result.newDocuments, retriedStalled: result.retriedStalled, republishedBlocks });
       await prisma.auditLog.create({
-        data: { action: "CRON_INGESTION", entityType: "Source", entityId: source.id, after: { publicationsScanned: result.publicationsScanned, newDocuments: result.newDocuments } },
+        data: { action: "CRON_INGESTION", entityType: "Source", entityId: source.id, after: { publicationsScanned: result.publicationsScanned, newDocuments: result.newDocuments, retriedStalled: result.retriedStalled } },
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
