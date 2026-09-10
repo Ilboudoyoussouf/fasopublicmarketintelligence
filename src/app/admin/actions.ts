@@ -5,6 +5,17 @@ import { requirePlatformAdmin } from "@/lib/session";
 import { revalidatePath } from "next/cache";
 import { DataQualityStatus } from "@prisma/client";
 import { runFullIngestion } from "@/lib/ingestion/pipeline";
+import { clearDemoMarkets } from "@/lib/admin/clear-demo-data";
+
+export async function clearDemoDataAction() {
+  await requirePlatformAdmin();
+  const result = await clearDemoMarkets();
+  revalidatePath("/marches");
+  revalidatePath("/dashboard");
+  revalidatePath("/opportunites");
+  revalidatePath("/admin/sources");
+  return result;
+}
 
 export async function togglePlatformAdminAction(userId: string) {
   await requirePlatformAdmin();

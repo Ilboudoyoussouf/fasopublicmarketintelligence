@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/Badge";
 import { toggleSourceActiveAction } from "@/app/admin/actions";
 import { formatDateTime } from "@/lib/utils";
 import { IngestButton } from "@/components/domain/IngestButton";
+import { ClearDemoDataButton } from "@/components/domain/ClearDemoDataButton";
 
 export default async function AdminSourcesPage() {
   const sources = await prisma.source.findMany({ include: { _count: { select: { publications: true } } } });
@@ -11,6 +12,15 @@ export default async function AdminSourcesPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold text-ink">Sources</h1>
+      <Card>
+        <CardBody className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-ink">Données de démonstration</p>
+            <p className="text-xs text-ink-muted">Retire les marchés fictifs du jeu de données initial (Annexe D) sans toucher aux marchés réellement ingérés depuis DGCMEF.</p>
+          </div>
+          <ClearDemoDataButton />
+        </CardBody>
+      </Card>
       <div className="space-y-2">
         {sources.map((s) => (
           <Card key={s.id}><CardBody>
