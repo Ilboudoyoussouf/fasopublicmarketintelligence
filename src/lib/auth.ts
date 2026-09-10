@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 export type SessionTenant = { id: string; name: string; role: string };
 
 export const { handlers, auth, signIn, signOut, unstable_update } = NextAuth({
+  trustHost: true, // hébergement hors Vercel (Hostinger) — sinon Auth.js rejette le host avec une erreur de configuration générique
   session: { strategy: "jwt" },
   pages: { signIn: "/connexion" },
   providers: [
