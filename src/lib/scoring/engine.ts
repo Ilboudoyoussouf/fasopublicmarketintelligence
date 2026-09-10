@@ -24,6 +24,10 @@ function normalize(text: string) {
     .replace(/[̀-ͯ]/g, "");
 }
 
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
 function overlapScore(a: string[], b: string[]) {
   if (a.length === 0 || b.length === 0) return 0;
   const setB = new Set(b.map(normalize));
@@ -68,7 +72,10 @@ function scorePertinence(market: MarketForScoring, tenant: TenantProfile, w: Wei
     factors.secteur = "Aucune correspondance de secteur";
   }
 
-  const objet = overlapScore(tenant.targetCategories, [market.title, market.description ?? "", ...market.keywords].join(" ").split(/\s+/));
+  const objet = overlapScore(
+    asStringArray(tenant.targetCategories),
+    [market.title, market.description ?? "", ...asStringArray(market.keywords)].join(" ").split(/\s+/),
+  );
   factors.objet = `${objet}% de correspondance mots-clés / objet`;
 
   let localisation = 60;

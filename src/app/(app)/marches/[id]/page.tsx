@@ -8,6 +8,7 @@ import { ScoreBlock } from "@/components/ui/ScoreBlock";
 import { SourceTag } from "@/components/ui/SourceTag";
 import { StateNotice } from "@/components/ui/StateNotice";
 import { MarketCtaBar } from "@/components/domain/MarketCtaBar";
+import { OfficialSourceBanner } from "@/components/domain/OfficialSourceBanner";
 import { formatFcfa, formatDate, formatDateTime, daysUntil } from "@/lib/utils";
 import {
   MARKET_STATUS_LABEL, MARKET_STATUS_TONE, PROCEDURE_TYPE_LABEL, PUBLICATION_TYPE_LABEL,
@@ -51,6 +52,13 @@ export default async function MarcheDetailPage({ params }: { params: Promise<{ i
           <span className="font-medium text-ink">{formatFcfa(market.amountEstimatedExclTax?.toString())}</span>
         </div>
       </div>
+
+      <OfficialSourceBanner
+        numero={market.notices[0]?.publication.numero}
+        page={market.notices[0]?.pageNumber}
+        publishedAt={market.notices[0]?.publishedAt}
+        sourceUrl={primarySourceDoc?.url}
+      />
 
       <MarketCtaBar marketId={market.id} isWatched={!!isWatched} sourceUrl={primarySourceDoc?.url} />
 

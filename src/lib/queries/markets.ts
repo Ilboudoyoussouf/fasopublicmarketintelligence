@@ -19,9 +19,9 @@ export function buildMarketWhere(filters: MarketFilters): Prisma.MarketWhereInpu
   const where: Prisma.MarketWhereInput = {};
   if (filters.q) {
     where.OR = [
-      { title: { contains: filters.q, mode: "insensitive" } },
-      { reference: { contains: filters.q, mode: "insensitive" } },
-      { keywords: { has: filters.q.toLowerCase() } },
+      { title: { contains: filters.q } },
+      { reference: { contains: filters.q } },
+      { keywords: { array_contains: filters.q.toLowerCase() } },
     ];
   }
   if (filters.groupe) where.sector = { group: filters.groupe };

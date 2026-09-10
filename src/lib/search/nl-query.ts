@@ -55,10 +55,10 @@ export async function runGlobalSearch(query: string) {
     AND: [
       parsed.amountMin ? { amountEstimatedExclTax: { gte: parsed.amountMin } } : {},
       parsed.region ? { region: { name: parsed.region } } : {},
-      parsed.sectorKeyword ? { OR: [{ title: { contains: parsed.sectorKeyword, mode: "insensitive" as const } }, { keywords: { has: parsed.sectorKeyword } }, { sector: { name: { contains: parsed.sectorKeyword, mode: "insensitive" as const } } }] } : {},
-      parsed.organismeKeyword ? { contractingAuthority: { name: { contains: parsed.organismeKeyword, mode: "insensitive" as const } } } : {},
+      parsed.sectorKeyword ? { OR: [{ title: { contains: parsed.sectorKeyword } }, { keywords: { array_contains: parsed.sectorKeyword } }, { sector: { name: { contains: parsed.sectorKeyword } } }] } : {},
+      parsed.organismeKeyword ? { contractingAuthority: { name: { contains: parsed.organismeKeyword } } } : {},
       !parsed.amountMin && !parsed.region && !parsed.sectorKeyword && !parsed.organismeKeyword
-        ? { OR: [{ title: { contains: query, mode: "insensitive" as const } }, { description: { contains: query, mode: "insensitive" as const } }] }
+        ? { OR: [{ title: { contains: query } }, { description: { contains: query } }] }
         : {},
     ],
   };
@@ -66,9 +66,9 @@ export async function runGlobalSearch(query: string) {
   const [markets, companies, authorities] = await Promise.all([
     prisma.market.findMany({ where: marketWhere, include: marketListInclude, take: 20, orderBy: { publishedAt: "desc" } }),
     parsed.companyKeyword
-      ? prisma.company.findMany({ where: { canonicalName: { contains: parsed.companyKeyword, mode: "insensitive" } }, take: 10 })
-      : prisma.company.findMany({ where: { canonicalName: { contains: query, mode: "insensitive" } }, take: 5 }),
-    prisma.contractingAuthority.findMany({ where: { name: { contains: query, mode: "insensitive" } }, take: 5 }),
+      ? prisma.company.findMany({ where: { canonicalName: { contains: parsed.companyKeyword } }, take: 10 })
+      : prisma.company.findMany({ where: { canonicalName: { contains: query } }, take: 5 }),
+    prisma.contractingAuthority.findMany({ where: { name: { contains: query } }, take: 5 }),
   ]);
 
   return { parsed, markets, companies, authorities };

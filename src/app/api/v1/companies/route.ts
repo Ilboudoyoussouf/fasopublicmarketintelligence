@@ -7,7 +7,7 @@ export async function GET(req: NextRequest) {
   if (error) return error;
   const q = req.nextUrl.searchParams.get("q");
   const companies = await prisma.company.findMany({
-    where: q ? { canonicalName: { contains: q, mode: "insensitive" } } : undefined,
+    where: q ? { canonicalName: { contains: q } } : undefined,
     take: 50,
     orderBy: { canonicalName: "asc" },
   });

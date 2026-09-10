@@ -4,6 +4,7 @@
 // montants, similarité textuelle.
 import { prisma } from "@/lib/prisma";
 import type { ExtractedNoticeCandidate } from "@/lib/ingestion/parser";
+import crypto from "crypto";
 
 export function normalize(text: string) {
   return text
@@ -23,6 +24,35 @@ export function jaccardSimilarity(a: string, b: string): number {
   for (const w of setA) if (setB.has(w)) intersection++;
   const union = setA.size + setB.size - intersection;
   return intersection / union;
+}
+
+/**
+ * Hash de bloc — section 1.3 de l'analyse structurelle : un encart
+ * publicitaire ou un résultat peut être republié à l'identique d'un
+ * numéro à l'autre (SONATUR dans les n°4484 et n°4485, synthèse AGETIB
+ * reprise du n°4484 au n°4485). Le hash porte sur le texte normalisé pour
+ * survivre aux variations d'espacement et de casse.
+ */
+export function computeBlockHash(rawBlock: string): string {
+  return crypto.createHash("sha256").update(normalize(rawBlock)).digest("hex");
+}
+
+/**
+ * Enregistre le hash d'un bloc s'il est nouveau. Retourne `isRepublished:
+ * true` si ce bloc exact a déjà été vu dans un autre document — auquel cas
+ * l'appelant ne doit pas créer un nouvel enregistrement mais journaliser la
+ * reprise (jamais de perte silencieuse, jamais de doublon).
+ */
+export async function registerBlockOrDetectDuplicate(rawBlock: string, documentId: string): Promise<{ isRepublished: boolean; firstSeenDocumentId?: string }> {
+  const hash = computeBlockHash(rawBlock);
+  const existing = await prisma.blockHash.findUnique({ where: { hash } });
+  if (existing) {
+    return { isRepublished: existing.documentId !== documentId, firstSeenDocumentId: existing.documentId };
+  }
+  await prisma.blockHash.create({ data: { hash, documentId } }).catch(() => {
+    // course possible entre deux jobs concurrents sur le même bloc : ignorer, le hash existe déjà.
+  });
+  return { isRepublished: false };
 }
 
 export async function findMatchingMarket(candidate: ExtractedNoticeCandidate) {

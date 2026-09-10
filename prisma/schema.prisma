@@ -7,7 +7,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -106,10 +106,11 @@ model Publication {
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 
-  documents      Document[]
-  notices        Notice[]
-  ppmPlans       PpmPlan[]
-  generalNotices GeneralNotice[]
+  documents           Document[]
+  notices             Notice[]
+  ppmPlans            PpmPlan[]
+  generalNotices      GeneralNotice[]
+  supplierDirectories SupplierDirectory[]
 
   @@unique([sourceId, numero, kind])
   @@index([publishedAt])
@@ -141,16 +142,18 @@ model Document {
   downloadedAt     DateTime?
   createdAt        DateTime         @default(now())
 
-  pages          DocumentPage[]
-  extractionJobs ExtractionJob[]
-  notices        Notice[]
-  corrections    Correction[]
-  cancellations  Cancellation[]
-  republications Republication[]
-  results        Result[]
-  appeals        Appeal[]
-  marketEvents   MarketEvent[]
-  ppmItems       PpmItem[]
+  pages               DocumentPage[]
+  extractionJobs      ExtractionJob[]
+  notices             Notice[]
+  corrections         Correction[]
+  cancellations       Cancellation[]
+  republications      Republication[]
+  results             Result[]
+  appeals             Appeal[]
+  marketEvents        MarketEvent[]
+  ppmItems            PpmItem[]
+  supplierDirectories SupplierDirectory[]
+  blockHashes         BlockHash[]
 
   @@unique([url])
   @@index([publicationId])
@@ -161,7 +164,7 @@ model DocumentPage {
   documentId    String
   document      Document @relation(fields: [documentId], references: [id])
   pageNumber    Int
-  rawText       String?
+  rawText       String? @db.Text
   ocrConfidence Float?
   createdAt     DateTime @default(now())
 
@@ -198,9 +201,10 @@ model ContractingAuthority {
   delegatedManager String? // maître d'ouvrage délégué
   createdAt        DateTime               @default(now())
 
-  markets        Market[]
-  ppmPlans       PpmPlan[]
-  generalNotices GeneralNotice[]
+  markets             Market[]
+  ppmPlans            PpmPlan[]
+  generalNotices      GeneralNotice[]
+  supplierDirectories SupplierDirectory[]
 
   @@unique([countryId, name])
 }
@@ -298,9 +302,19 @@ enum FinancingSource {
   AUTRE
 }
 
+enum ProcurementRegime {
+  NATIONAL
+  BANQUE_MONDIALE
+  BAD
+  KFW
+  UNION_EUROPEENNE
+  AUTRE
+}
+
 model Donor {
-  id   String @id @default(cuid())
-  name String @unique
+  id               String             @id @default(cuid())
+  name             String             @unique
+  regimeProcedural ProcurementRegime? // chaque bailleur impose son propre jeu de règles (section 5.1)
 
   fundings Funding[]
 }
@@ -318,14 +332,14 @@ model Market {
   reference       String? // référence officielle
   procedureNumber String?
   title           String
-  description     String?
+  description     String? @db.Text
   publicationType PublicationType
   procedureType   ProcedureType
   sectorId        String?
   sector          Sector?         @relation(fields: [sectorId], references: [id])
   subsectorId     String?
   subsector       Subsector?      @relation(fields: [subsectorId], references: [id])
-  keywords        String[]
+  keywords        Json     @default("[]") // string[] — MySQL n'a pas de type tableau natif
   status          MarketStatus    @default(PUBLIE)
   currentVersion  Int             @default(1)
 
@@ -334,7 +348,7 @@ model Market {
 
   // Financement
   financingSource FinancingSource?
-  financingDetail String?
+  financingDetail String? @db.Text
 
   // Montants (section "Montants" — stockés séparément)
   amountEstimatedExclTax Decimal? @db.Decimal(18, 2)
@@ -350,7 +364,7 @@ model Market {
   // Localisation
   regionId   String?
   region     Region? @relation(fields: [regionId], references: [id])
-  siteDetail String?
+  siteDetail String? @db.Text
 
   // Calendrier
   publishedAt        DateTime?
@@ -404,7 +418,7 @@ model MarketLot {
   market                Market       @relation(fields: [marketId], references: [id])
   numero                String
   objet                 String
-  description           String?
+  description           String? @db.Text
   montant               Decimal?     @db.Decimal(18, 2)
   regionId              String?
   quantite              Float?
@@ -412,6 +426,12 @@ model MarketLot {
   status                MarketStatus @default(PUBLIE)
   attributaireCompanyId String?
   attributaire          Company?     @relation(fields: [attributaireCompanyId], references: [id])
+
+  // Section 3.4 & 10.3 : rabattement environnemental (PGES) et fourchette
+  // de garantie de bonne exécution (30 à 40%, jamais un taux fixe).
+  criterePges              Boolean @default(false)
+  tauxRabattementPgesPct   Float?
+  tauxGarantieExecutionPct Float?
 
   bids              Bid[]
   results           Result[]
@@ -468,7 +488,7 @@ model MarketEvent {
   occurredAt       DateTime
   sourceDocumentId String?
   sourceDocument   Document?       @relation(fields: [sourceDocumentId], references: [id])
-  description      String?
+  description      String? @db.Text
   createdAt        DateTime        @default(now())
 
   @@index([marketId, occurredAt])
@@ -487,7 +507,7 @@ model Notice {
   pageNumber      Int?
   publicationType PublicationType
   publishedAt     DateTime
-  rawExcerpt      String?
+  rawExcerpt      String? @db.Text
   createdAt       DateTime        @default(now())
 
   @@index([marketId])
@@ -498,10 +518,10 @@ model Correction {
   marketId         String
   market           Market    @relation(fields: [marketId], references: [id])
   fieldChanged     String
-  beforeValue      String?
-  afterValue       String?
+  beforeValue      String? @db.Text
+  afterValue       String? @db.Text
   effectiveAt      DateTime
-  consequence      String?
+  consequence      String? @db.Text
   sourceDocumentId String?
   sourceDocument   Document? @relation(fields: [sourceDocumentId], references: [id])
   createdAt        DateTime  @default(now())
@@ -513,7 +533,7 @@ model Cancellation {
   id                 String    @id @default(cuid())
   marketId           String
   market             Market    @relation(fields: [marketId], references: [id])
-  motif              String
+  motif              String @db.Text
   cancelledAt        DateTime
   procedureConcerned String?
   sourceDocumentId   String?
@@ -555,6 +575,8 @@ enum RequirementType {
   DOCUMENTS_TECHNIQUES
   CONDITIONS_GEOGRAPHIQUES
   CONDITIONS_RESERVATION
+  CERTIFICATION
+  CRITERE_ENVIRONNEMENTAL
   AUTRE
 }
 
@@ -565,7 +587,7 @@ model Requirement {
   lotId          String?
   lot            MarketLot?      @relation(fields: [lotId], references: [id])
   type           RequirementType
-  rawText        String
+  rawText        String @db.Text
   thresholdValue Float?
   thresholdUnit  String?
   confidence     Float           @default(0.7)
@@ -598,7 +620,7 @@ model MarketRequiredDocument {
   lot       MarketLot?      @relation(fields: [lotId], references: [id])
   docType   RequiredDocType
   mandatory Boolean         @default(true)
-  rawText   String?
+  rawText   String? @db.Text
 }
 
 enum ReservationCategory {
@@ -607,6 +629,7 @@ enum ReservationCategory {
   ENTREPRISES_COMMUNAUTAIRES
   FEMMES
   JEUNES
+  ACTIONNARIAT_HANDICAP
   CRITERES_SPECIFIQUES
   CONSULTANTS_BURKINABE_COMMUNAUTAIRES
   AUTRE
@@ -619,12 +642,25 @@ model MarketReservation {
   lotId    String?
   lot      MarketLot?          @relation(fields: [lotId], references: [id])
   category ReservationCategory
-  rawText  String?
+  rawText  String? @db.Text
 }
 
 // =====================================================================
 // 6. ENTREPRISES (annuaire public) & RÉSOLUTION D'ENTITÉ (sections 13, 43)
 // =====================================================================
+
+enum CompanySize {
+  MICRO
+  PETITE
+  MOYENNE
+  GRANDE
+}
+
+enum TaxRegime {
+  CME_MICRO
+  RSI_SIMPLIFIE
+  RNI_NORMAL
+}
 
 model Company {
   id            String   @id @default(cuid())
@@ -637,18 +673,34 @@ model Company {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  aliases        CompanyAlias[]
-  sectors        CompanySector[]
-  licenses       CompanyLicense[]
-  references     CompanyReference[]
-  participations CompanyParticipation[]
-  bids           Bid[]
-  wonLots        MarketLot[]
-  results        Result[]               @relation("ResultWinner")
-  appealsFiled   Appeal[]
-  mergesFrom     CompanyMerge[]         @relation("MergeSource")
-  mergesInto     CompanyMerge[]         @relation("MergeTarget")
-  watchlistItems WatchlistTarget[]
+  // Enrichissement — section 3.2 et 8.11 de l'analyse structurelle
+  rccm              String?
+  rccmNormalise     String? // clé de rapprochement : espaces/tirets supprimés
+  formeJuridique    String? // SARL, SA, Établissement, Groupement, Société coopérative
+  telephones        Json         @default("[]") // string[]
+  paysOrigine       String?
+  estGroupement     Boolean      @default(false)
+  tailleEntreprise  CompanySize?
+  regimeFiscal      TaxRegime?
+  representantLegal String?
+  anneeCreation     Int?
+  ageGerant         Int?
+  disposePges       Boolean      @default(false) // Plan de Gestion Environnementale et Sociale
+  dateValiditePges  DateTime?
+
+  aliases                  CompanyAlias[]
+  sectors                  CompanySector[]
+  licenses                 CompanyLicense[]
+  references               CompanyReference[]
+  participations           CompanyParticipation[]
+  bids                     Bid[]
+  wonLots                  MarketLot[]
+  results                  Result[]                 @relation("ResultWinner")
+  appealsFiled             Appeal[]
+  mergesFrom               CompanyMerge[]           @relation("MergeSource")
+  mergesInto               CompanyMerge[]           @relation("MergeTarget")
+  watchlistItems           WatchlistTarget[]
+  supplierDirectoryEntries SupplierDirectoryEntry[]
 
   @@unique([countryId, canonicalName])
   @@index([ifu])
@@ -671,7 +723,7 @@ model CompanyMerge {
   sourceCompany   Company  @relation("MergeSource", fields: [sourceCompanyId], references: [id])
   targetCompanyId String
   targetCompany   Company  @relation("MergeTarget", fields: [targetCompanyId], references: [id])
-  reason          String?
+  reason          String? @db.Text
   reversible      Boolean  @default(true)
   performedBy     String?
   performedAt     DateTime @default(now())
@@ -688,12 +740,18 @@ model CompanySector {
 }
 
 model CompanyLicense {
-  id               String    @id @default(cuid())
-  companyId        String
-  company          Company   @relation(fields: [companyId], references: [id])
-  label            String
-  expirationDate   DateTime?
-  sourceDocumentId String?
+  id                     String    @id @default(cuid())
+  companyId              String
+  company                Company   @relation(fields: [companyId], references: [id])
+  label                  String
+  // Agrément à trois dimensions — section 5.2 de l'analyse structurelle :
+  // catégorie (A, A1-A3, B1-B2, SC2, D1/D1-B/D1-C/D3/D4, U1-U2), domaine,
+  // couverture géographique (une catégorie valide peut ne pas couvrir la région du marché).
+  categorie              String?
+  domaine                String?
+  couvertureGeographique String?
+  expirationDate         DateTime?
+  sourceDocumentId       String?
 
   @@index([companyId])
 }
@@ -752,22 +810,53 @@ enum RejectionReason {
   AUTRE
 }
 
+enum RejectionMotifCategory {
+  A_FORME_SOUMISSION
+  B_CALCUL_COHERENCE
+  C_ANOMALIES_FINANCIERES
+  D_PIECES_ELIGIBILITE
+  E_CAPACITE_TECHNIQUE
+  F_SPECIFICATIONS_TECHNIQUES
+  G_PRESTATIONS_INTELLECTUELLES
+  H_FRAUDE_FAUSSES_DECLARATIONS
+  I_TAILLE_REGIME_FISCAL
+}
+
+// Référentiel des motifs de rejet — section 9.6 : "le référentiel le plus
+// précieux". Un même motif peut couvrir plusieurs offres ; une offre peut
+// cumuler plusieurs motifs (Bid.rejectionMotifCodes).
+model RejectionMotif {
+  code      String                 @id // ex "A01", "H07"
+  category  RejectionMotifCategory
+  label     String
+  gravite   Int                    @default(1) // 1 = mineur, 3 = éliminatoire systématique
+  evitable  Boolean                @default(true) // le soumissionnaire aurait pu l'éviter
+  createdAt DateTime               @default(now())
+}
+
 model Bid {
-  id              String           @id @default(cuid())
-  marketId        String
-  market          Market           @relation(fields: [marketId], references: [id])
-  lotId           String?
-  lot             MarketLot?       @relation(fields: [lotId], references: [id])
-  companyId       String
-  company         Company          @relation(fields: [companyId], references: [id])
-  amountRead      Decimal?         @db.Decimal(18, 2)
-  amountCorrected Decimal?         @db.Decimal(18, 2)
-  conformity      Boolean?
-  rank            Int?
-  rejectionReason RejectionReason?
-  rejectionDetail String?
-  submittedAt     DateTime?
-  createdAt       DateTime         @default(now())
+  id                  String           @id @default(cuid())
+  marketId            String
+  market              Market           @relation(fields: [marketId], references: [id])
+  lotId               String?
+  lot                 MarketLot?       @relation(fields: [lotId], references: [id])
+  companyId           String
+  company             Company          @relation(fields: [companyId], references: [id])
+  // Trois montants distincts — section 3.7 : les confondre fausse toute
+  // statistique de prix. montant_soumissionne = amountRead ; montant_corrige
+  // = après corrections arithmétiques CAM ; montant_attribue = après
+  // augmentation de quantités (jusqu'à 15% de la réglementation).
+  amountRead          Decimal?         @db.Decimal(18, 2)
+  amountCorrected     Decimal?         @db.Decimal(18, 2)
+  amountAwarded       Decimal?         @db.Decimal(18, 2)
+  awardIncreasePct    Float? // taux d'augmentation attribué vs corrigé, ex. 14.93
+  conformity          Boolean?
+  rank                Int?
+  rejectionReason     RejectionReason?
+  rejectionMotifCodes Json     @default("[]") // string[] — codes du référentiel RejectionMotif, cumulables
+  rejectionDetail     String? @db.Text
+  submittedAt         DateTime?
+  createdAt           DateTime         @default(now())
 
   corrections BidCorrection[]
   evaluation  Evaluation?
@@ -781,9 +870,9 @@ model BidCorrection {
   bidId       String
   bid         Bid     @relation(fields: [bidId], references: [id])
   field       String
-  beforeValue String?
-  afterValue  String?
-  reason      String?
+  beforeValue String? @db.Text
+  afterValue  String? @db.Text
+  reason      String? @db.Text
 }
 
 model Evaluation {
@@ -793,6 +882,19 @@ model Evaluation {
   criteriaJson Json?
   note         Float?
   threshold    Float?
+}
+
+// Convention de calcul de l'offre anormalement basse détectée dans le
+// bloc "analyse financière" — section 3.3 : au moins six variantes
+// coexistent dans le corpus, avec des erreurs manifestes dans certaines.
+enum OabConvention {
+  CANONIQUE // M = 0,6E + 0,4P ; BI = 0,85M ; ST = 0,95BI ; BS = 1,15M
+  NOMENCLATURE_INVERSEE
+  SOMME_ERRONEE // M calculé comme une somme au lieu d'une moyenne pondérée
+  TABLEAU_NOMME
+  TOLERANCE_ALTERNATIVE // seuil de tolérance exprimé différemment (ex. 15% au lieu de 5%)
+  DOUBLE_CALCUL // marchés à commandes : formule appliquée sur min ET max
+  INDETERMINEE
 }
 
 model Result {
@@ -808,12 +910,21 @@ model Result {
   winnerCompanyId  String?
   winnerCompany    Company?   @relation("ResultWinner", fields: [winnerCompanyId], references: [id])
   awardedAmount    Decimal?   @db.Decimal(18, 2)
-  decision         String?
+  decision         String? @db.Text
   resultAt         DateTime
   isCorrected      Boolean    @default(false)
   sourceDocumentId String?
   sourceDocument   Document?  @relation(fields: [sourceDocumentId], references: [id])
   createdAt        DateTime   @default(now())
+
+  // Moteur OAB multi-conventions — section 3.3 & 10.1. On ne corrige jamais
+  // la donnée officielle : on la signale (scoreCoherence < 0,7 ⇒ exclue de
+  // l'estimateur de prix, marquée "seuils potentiellement erronés").
+  seuil085M          Decimal?       @db.Decimal(18, 2) // borne inférieure / plancher OAB
+  seuil115M          Decimal?       @db.Decimal(18, 2) // borne supérieure
+  seuilTolerance5pct Decimal?       @db.Decimal(18, 2)
+  oabConvention      OabConvention?
+  scoreCoherence     Float? // 1.0 = cohérent ; < 0.7 = seuils potentiellement erronés
 
   @@index([marketId])
   @@index([winnerCompanyId])
@@ -823,20 +934,35 @@ model Result {
 // 8. RECOURS & RÉEXAMEN (section 15)
 // =====================================================================
 
+enum AppealType {
+  RECOURS_PREALABLE // devant l'autorité contractante
+  RECOURS_ARCOP // décision de l'organe de régulation (ORD/CRD)
+}
+
+enum ArcopOrgane {
+  ORD
+  CRD
+}
+
 model Appeal {
-  id                 String    @id @default(cuid())
+  id                 String       @id @default(cuid())
   marketId           String
-  market             Market    @relation(fields: [marketId], references: [id])
+  market             Market       @relation(fields: [marketId], references: [id])
   requesterCompanyId String?
-  requesterCompany   Company?  @relation(fields: [requesterCompanyId], references: [id])
+  requesterCompany   Company?     @relation(fields: [requesterCompanyId], references: [id])
   object             String
   filedAt            DateTime
   authority          String?
-  resultBefore       String?
-  resultAfter        String?
+  resultBefore       String? @db.Text
+  resultAfter        String? @db.Text
+  // Recours ARCOP — section 3.5 : taux de recours par autorité, taux de
+  // succès, délai moyen sont des indicateurs qu'aucun concurrent ne détient.
+  appealType         AppealType?
+  referenceDecision  String? // ex "N°2026-L0308/ARCOP/ORD"
+  organeDecision     ArcopOrgane?
   sourceDocumentId   String?
-  sourceDocument     Document? @relation(fields: [sourceDocumentId], references: [id])
-  createdAt          DateTime  @default(now())
+  sourceDocument     Document?    @relation(fields: [sourceDocumentId], references: [id])
+  createdAt          DateTime     @default(now())
 
   decisions AppealDecision[]
 }
@@ -845,9 +971,9 @@ model AppealDecision {
   id          String   @id @default(cuid())
   appealId    String
   appeal      Appeal   @relation(fields: [appealId], references: [id])
-  decision    String
+  decision    String @db.Text
   decidedAt   DateTime
-  consequence String?
+  consequence String? @db.Text
 }
 
 model Review {
@@ -935,6 +1061,56 @@ model GeneralNotice {
 }
 
 // =====================================================================
+// 10 bis. RÉPERTOIRES DE FOURNISSEURS (objets REP) — section 3.1
+// Gisement le plus immédiatement exploitable : identité, IFU/RCCM,
+// dirigeant, téléphone, secteur — table `entreprises` pré-remplie sans
+// attendre l'accumulation par les résultats, et fichier de prospection.
+// =====================================================================
+
+enum SupplierDirectoryStatus {
+  PUBLIE
+  RECTIFIE
+}
+
+model SupplierDirectory {
+  id                     String                  @id @default(cuid())
+  contractingAuthorityId String
+  contractingAuthority   ContractingAuthority    @relation(fields: [contractingAuthorityId], references: [id])
+  title                  String // ex "Répertoire des prestataires — exercice 2026"
+  domaine                String? // domaine de référencement = secteur natif, sans classification
+  exercices              Json                    @default("[]") // string[] — ex ["2026","2027","2028"]
+  status                 SupplierDirectoryStatus @default(PUBLIE)
+  publicationId          String?
+  publication            Publication?            @relation(fields: [publicationId], references: [id])
+  sourceDocumentId       String?
+  sourceDocument         Document?               @relation(fields: [sourceDocumentId], references: [id])
+  createdAt              DateTime                @default(now())
+
+  entries SupplierDirectoryEntry[]
+}
+
+model SupplierDirectoryEntry {
+  id                String            @id @default(cuid())
+  directoryId       String
+  directory         SupplierDirectory @relation(fields: [directoryId], references: [id])
+  pliNumber         String? // numéro de pli dans le répertoire
+  companyId         String?
+  company           Company?          @relation(fields: [companyId], references: [id])
+  rawName           String // raison sociale telle que publiée, avant résolution d'entité
+  ifu               String?
+  rccm              String?
+  representantLegal String?
+  telephone         String?
+  ville             String?
+  anneeCreation     Int?
+  agrement          String?
+  createdAt         DateTime          @default(now())
+
+  @@index([directoryId])
+  @@index([companyId])
+}
+
+// =====================================================================
 // 11. SAAS — TENANTS, UTILISATEURS, RBAC (section 17, 49)
 // =====================================================================
 
@@ -964,7 +1140,7 @@ model Tenant {
   revenueBand      String?
   experienceYears  Int?
   preferences      Json?
-  targetCategories String[]
+  targetCategories Json     @default("[]") // string[]
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -1155,7 +1331,7 @@ model Alert {
   type            AlertType
   priority        AlertPriority @default(NORMALE)
   title           String
-  body            String?
+  body            String? @db.Text
   relatedMarketId String?
   dedupeKey       String?
   readAt          DateTime?
@@ -1187,7 +1363,7 @@ model Notification {
   channel NotificationChannel
   status  NotificationStatus  @default(QUEUED)
   sentAt  DateTime?
-  error   String?
+  error   String? @db.Text
 }
 
 // =====================================================================
@@ -1342,7 +1518,7 @@ model SubmissionFolder {
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
   marketId  String
   status    String   @default("OUVERT")
-  notes     String?
+  notes     String? @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1397,7 +1573,7 @@ model AiMessage {
   conversationId String
   conversation   AiConversation @relation(fields: [conversationId], references: [id])
   role           AiRole
-  content        String
+  content        String @db.Text
   confidence     String? // "élevée" | "moyenne" | "faible"
   createdAt      DateTime       @default(now())
 
@@ -1410,7 +1586,7 @@ model AiSource {
   message    AiMessage @relation(fields: [messageId], references: [id])
   entityType String // "market" | "document" | "result" ...
   entityId   String
-  excerpt    String?
+  excerpt    String? @db.Text
 }
 
 // =====================================================================
@@ -1490,6 +1666,19 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@index([occurredAt])
+}
+
+// Déduplication globale par hash de bloc — section 1.3 de l'analyse
+// structurelle : un encart publicitaire ou un résultat peut être republié
+// à l'identique d'un numéro à l'autre (ex. SONATUR dans les n°4484 et
+// n°4485). Un hash déjà vu ⇒ pas de nouvel enregistrement, on journalise.
+model BlockHash {
+  hash       String   @id
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id])
+  createdAt  DateTime @default(now())
+
+  @@index([documentId])
 }
 
 model AnalyticsSnapshot {

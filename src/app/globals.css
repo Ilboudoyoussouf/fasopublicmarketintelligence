@@ -1,31 +1,62 @@
 @import "tailwindcss";
 
 /*
- * Design system — section 55 à 58 du cahier des charges :
- * fond clair, beaucoup d'espace blanc, cartes sobres, bordures fines,
- * couleurs limitées. Rouge/orange = alerte, vert = favorable,
- * bleu/neutre = donnée. « Data first, decoration last. »
+ * Design system — Livre III §12 du cahier des charges v2.
+ * « La donnée d'abord, la décoration jamais. » Densité maîtrisée,
+ * hiérarchie par la typographie et l'espace, chiffre citoyen de première
+ * classe (tabular-nums, aligné à droite, séparateurs de milliers, unité
+ * toujours visible).
  */
 :root {
-  --paper: #ffffff;
-  --paper-sunken: #f7f8fa;
-  --ink: #14181f;
-  --ink-muted: #55606f;
-  --ink-faint: #8892a0;
-  --line: #e4e7ec;
-  --line-strong: #cbd2dc;
+  /* Neutres — l'ossature, 90% de l'interface */
+  --bg: #ffffff;
+  --surface: #fafaf9;
+  --surface-2: #f4f4f2;
+  --border: #e4e4e1;
+  --border-strong: #c9c9c4;
+  --text: #16181a;
+  --text-2: #5c6166;
+  --text-3: #8b9196;
 
-  --brand: #1e3a8a;
-  --brand-soft: #eef2fb;
+  /* Accent — un seul, sobre : vert profond, clin d'œil discret au drapeau */
+  --accent: #0f5c4a;
+  --accent-soft: #e6f0ed;
+  --accent-strong: #0a4438;
 
-  --info: #2563eb;
+  /* Sémantique — statuts métier */
+  --ok: #166534;
+  --ok-soft: #eafaf0;
+  --warn: #92400e;
+  --warn-soft: #fef4e6;
+  --danger: #991b1b;
+  --danger-soft: #fdecec;
+  --info: #1e40af;
   --info-soft: #eaf1fd;
-  --success: #15803d;
-  --success-soft: #eafaf0;
-  --warning: #b45309;
-  --warning-soft: #fef4e6;
-  --critical: #b91c1c;
-  --critical-soft: #fdecec;
+  --neutral: #57534e;
+  --neutral-soft: #f4f4f2;
+
+  /* Urgence temporelle — échelle dédiée, jamais réutilisée ailleurs */
+  --urgency-j1: #7f1d1d;
+  --urgency-j3: #b91c1c;
+  --urgency-j7: #c2410c;
+  --urgency-j15: #a16207;
+
+  /* Aliases internes utilisés par les composants existants */
+  --paper: var(--bg);
+  --paper-sunken: var(--surface-2);
+  --ink: var(--text);
+  --ink-muted: var(--text-2);
+  --ink-faint: var(--text-3);
+  --line: var(--border);
+  --line-strong: var(--border-strong);
+  --brand: var(--accent);
+  --brand-soft: var(--accent-soft);
+  --success: var(--ok);
+  --success-soft: var(--ok-soft);
+  --warning: var(--warn);
+  --warning-soft: var(--warn-soft);
+  --critical: var(--danger);
+  --critical-soft: var(--danger-soft);
 }
 
 @theme inline {
@@ -46,18 +77,35 @@
   --color-warning-soft: var(--warning-soft);
   --color-critical: var(--critical);
   --color-critical-soft: var(--critical-soft);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
 }
 
 body {
   background: var(--paper-sunken);
   color: var(--ink);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 * {
   border-color: var(--line);
+}
+
+h1 { font-size: 24px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; }
+h2 { font-size: 20px; font-weight: 600; line-height: 1.3; }
+h3 { font-size: 16px; font-weight: 600; line-height: 1.4; }
+
+/* Chiffres — toujours tabulaires, jamais proportionnels, dans les tableaux et KPI */
+.tabular-nums,
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.font-mono-ref {
+  font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
 }
 
 ::-webkit-scrollbar {
@@ -71,17 +119,27 @@ body {
 
 .input {
   width: 100%;
-  border-radius: 0.375rem;
+  border-radius: 0.5rem;
   border: 1px solid var(--line);
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
   background: var(--paper);
   color: var(--ink);
+  transition: border-color 0.15s ease;
 }
 .input:focus {
   outline: none;
-  border-color: var(--brand);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .input::placeholder {
   color: var(--ink-faint);
 }
+
+/* Échelle d'urgence temporelle — section 12.2. Utilisée uniquement pour
+   les échéances de dépôt, jamais pour un autre usage. */
+.urgency-j1 { background: var(--urgency-j1); color: #fff; }
+.urgency-j3 { background: var(--urgency-j3); color: #fff; }
+.urgency-j7 { background: transparent; color: var(--urgency-j7); border: 1.5px solid var(--urgency-j7); }
+.urgency-j15 { background: transparent; color: var(--urgency-j15); border: 1px solid var(--urgency-j15); }
+.urgency-far { color: var(--text-2); }

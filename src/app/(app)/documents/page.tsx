@@ -18,7 +18,7 @@ export default async function DocumentsPage({ searchParams }: { searchParams: Pr
 
   const documents = await prisma.document.findMany({
     where: {
-      ...(sp.q ? { OR: [{ filename: { contains: sp.q, mode: "insensitive" } }, { publication: { numero: { contains: sp.q, mode: "insensitive" } } }] } : {}),
+      ...(sp.q ? { OR: [{ filename: { contains: sp.q } }, { publication: { numero: { contains: sp.q } } }] } : {}),
       ...(sp.type ? { publication: { kind: sp.type as never } } : {}),
     },
     include: { publication: true },

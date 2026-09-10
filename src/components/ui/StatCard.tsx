@@ -24,10 +24,10 @@ export function StatCard({
     <Card className={className}>
       <CardBody className="space-y-1.5">
         <p className="text-xs font-medium text-ink-muted">{label}</p>
-        <p className="text-2xl font-semibold tracking-tight text-ink">{value}</p>
+        <p className="num text-2xl font-semibold tracking-tight text-ink">{value}</p>
         <div className="flex items-center gap-2 text-xs">
           {delta !== undefined && (
-            <span className={cn("inline-flex items-center gap-0.5 font-medium", delta >= 0 ? "text-success" : "text-critical")}>
+            <span className={cn("num inline-flex items-center gap-0.5 font-medium", delta >= 0 ? "text-success" : "text-critical")}>
               {delta >= 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
               {delta >= 0 ? "+" : ""}
               {delta}%

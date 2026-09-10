@@ -37,6 +37,14 @@ import {
   ExtractionJobStage,
   ExtractionJobStatus,
   DataQualityStatus,
+  CompanySize,
+  TaxRegime,
+  OabConvention,
+  AppealType,
+  ArcopOrgane,
+  RejectionMotifCategory,
+  ProcurementRegime,
+  SupplierDirectoryStatus,
 } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
@@ -63,6 +71,15 @@ const SECTORS: Record<SectorGroup, string[]> = {
 };
 
 async function main() {
+  // Idempotence : le seed peut être exécuté à chaque déploiement (voir le
+  // script "hostinger-build") sans jamais dupliquer les données de
+  // démonstration déjà en base.
+  const alreadySeeded = await db.tenant.count();
+  if (alreadySeeded > 0) {
+    console.log("→ Base déjà initialisée, seed ignoré (idempotent).");
+    return;
+  }
+
   console.log("→ Référentiel pays / géographie");
   const bf = await db.country.upsert({
     where: { code: "BF" },
@@ -688,6 +705,184 @@ async function main() {
   await db.auditLog.create({ data: { tenantId: tenant.id, actorUserId: demoUser.id, action: "TENANT_CREATED", entityType: "Tenant", entityId: tenant.id, after: { name: tenant.name } } });
   await db.auditLog.create({ data: { actorUserId: analystUser.id, action: "DATA_QUALITY_VALIDATED", entityType: "Market", entityId: m1.id, after: { field: "amountEstimatedExclTax", status: "VALIDE" } } });
 
+  console.log("→ Référentiel des motifs de rejet (taxonomie A-I, section 9.6)");
+  const REJECTION_MOTIFS: { code: string; category: RejectionMotifCategory; label: string; gravite?: number; evitable?: boolean }[] = [
+    { code: "A01", category: "A_FORME_SOUMISSION", label: "Lettre de soumission non conforme (montants min/max non précisés)" },
+    { code: "A02", category: "A_FORME_SOUMISSION", label: "Un seul montant proposé au lieu d'un minimum et d'un maximum" },
+    { code: "A03", category: "A_FORME_SOUMISSION", label: "Discordance entre le montant de la lettre de soumission et celui du bordereau des prix" },
+    { code: "A04", category: "A_FORME_SOUMISSION", label: "Non-respect du modèle de lettre de soumission" },
+    { code: "A05", category: "A_FORME_SOUMISSION", label: "Formulaire de bordereau des prix unitaires non conforme" },
+    { code: "A06", category: "A_FORME_SOUMISSION", label: "Délai de validité de l'offre non spécifié" },
+    { code: "A07", category: "A_FORME_SOUMISSION", label: "Montants de la lettre différents de ceux du devis" },
+    { code: "B01", category: "B_CALCUL_COHERENCE", label: "Erreur de sommation sur des items" },
+    { code: "B02", category: "B_CALCUL_COHERENCE", label: "Prix unitaire en lettres différent du prix en chiffres" },
+    { code: "B03", category: "B_CALCUL_COHERENCE", label: "Prix unitaire du devis différent de celui du bordereau" },
+    { code: "B04", category: "B_CALCUL_COHERENCE", label: "Erreur de quantité (proposée ≠ demandée)" },
+    { code: "B05", category: "B_CALCUL_COHERENCE", label: "Total d'un poste non calculé" },
+    { code: "B06", category: "B_CALCUL_COHERENCE", label: "Sous-total non pris en compte dans le total" },
+    { code: "B07", category: "B_CALCUL_COHERENCE", label: "Prix unitaire non facturé (la CAM attribue le prix le plus élevé)" },
+    { code: "C01", category: "C_ANOMALIES_FINANCIERES", label: "Offre anormalement basse (sous 0,85 M)" },
+    { code: "C02", category: "C_ANOMALIES_FINANCIERES", label: "OAB mais incluse dans le seuil de tolérance de 5 % → conforme", evitable: false },
+    { code: "C03", category: "C_ANOMALIES_FINANCIERES", label: "Offre en dessous du seuil de tolérance" },
+    { code: "C04", category: "C_ANOMALIES_FINANCIERES", label: "Hors enveloppe (montant corrigé supérieur au prévisionnel)" },
+    { code: "C05", category: "C_ANOMALIES_FINANCIERES", label: "Montant corrigé inférieur de plus de 50 % au montant prévisionnel" },
+    { code: "C06", category: "C_ANOMALIES_FINANCIERES", label: "Offre déséquilibrée : prix unitaires sous les minima de la mercuriale (art. 116)" },
+    { code: "D01", category: "D_PIECES_ELIGIBILITE", label: "RCCM non transmis" },
+    { code: "D02", category: "D_PIECES_ELIGIBILITE", label: "Pièce administrative non transmise" },
+    { code: "D03", category: "D_PIECES_ELIGIBILITE", label: "Agrément technique non fourni" },
+    { code: "D04", category: "D_PIECES_ELIGIBILITE", label: "Agrément de catégorie inférieure à celle demandée" },
+    { code: "D05", category: "D_PIECES_ELIGIBILITE", label: "Agrément expiré" },
+    { code: "D06", category: "D_PIECES_ELIGIBILITE", label: "Preuve d'éligibilité au marché réservé non fournie" },
+    { code: "E01", category: "E_CAPACITE_TECHNIQUE", label: "Absence de preuve de possession du matériel (liste notariée, reçu d'achat)" },
+    { code: "E02", category: "E_CAPACITE_TECHNIQUE", label: "Liste de matériel non probante (montant liste ≠ montant facture)" },
+    { code: "E03", category: "E_CAPACITE_TECHNIQUE", label: "Personnel insuffisant (1 technicien au lieu de 2)" },
+    { code: "E04", category: "E_CAPACITE_TECHNIQUE", label: "Diplôme non probant (CAP au lieu du niveau requis)" },
+    { code: "E05", category: "E_CAPACITE_TECHNIQUE", label: "Surcharge ou rature sur un diplôme" },
+    { code: "E06", category: "E_CAPACITE_TECHNIQUE", label: "Faute d'orthographe sur un diplôme" },
+    { code: "E07", category: "E_CAPACITE_TECHNIQUE", label: "Attestation de travail non fournie" },
+    { code: "E08", category: "E_CAPACITE_TECHNIQUE", label: "Absence de réponse à une lettre de la CAM demandant des justificatifs" },
+    { code: "F01", category: "F_SPECIFICATIONS_TECHNIQUES", label: "Échantillons ou prospectus non fournis" },
+    { code: "F02", category: "F_SPECIFICATIONS_TECHNIQUES", label: "Marque non précisée" },
+    { code: "F03", category: "F_SPECIFICATIONS_TECHNIQUES", label: "Spécifications techniques non proposées" },
+    { code: "F04", category: "F_SPECIFICATIONS_TECHNIQUES", label: "Article proposé différent de l'article demandé (format, référence)" },
+    { code: "G01", category: "G_PRESTATIONS_INTELLECTUELLES", label: "Note technique inférieure au minimum requis (75/100)" },
+    { code: "G02", category: "G_PRESTATIONS_INTELLECTUELLES", label: "Méthodologie non conforme aux termes de référence" },
+    { code: "G03", category: "G_PRESTATIONS_INTELLECTUELLES", label: "Volume de travail homme/mois non conforme" },
+    { code: "G04", category: "G_PRESTATIONS_INTELLECTUELLES", label: "Non-respect d'un formulaire type (Tech 7, Tech 8)" },
+    { code: "G05", category: "G_PRESTATIONS_INTELLECTUELLES", label: "Planning illisible ou non fourni" },
+    { code: "G06", category: "G_PRESTATIONS_INTELLECTUELLES", label: "Références similaires insuffisantes ou non pertinentes" },
+    { code: "G07", category: "G_PRESTATIONS_INTELLECTUELLES", label: "Conflit d'intérêt : cabinet présent dans deux groupements concurrents" },
+    { code: "H01", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Plan de charge inexact ou incomplet (marchés en cours non déclarés)", gravite: 3 },
+    { code: "H02", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Référence de marché similaire usurpée", gravite: 3 },
+    { code: "H03", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Personnel proposé désavouant son appartenance à l'entreprise", gravite: 3 },
+    { code: "H04", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Pièce administrative non authentique", gravite: 3 },
+    { code: "H05", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Certification professionnelle falsifiée ou non vérifiable", gravite: 3 },
+    { code: "H06", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Signature identique pour deux signataires distincts", gravite: 3 },
+    { code: "H07", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Prospectus ou document constructeur modifié", gravite: 3 },
+    { code: "H08", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Incohérence d'état civil entre CV et diplôme", gravite: 2 },
+    { code: "H09", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Garantie de soumission périmée ou antidatée", gravite: 3 },
+    { code: "H10", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Même personnel ou matériel proposé pour plusieurs lots ou entreprises", gravite: 3 },
+    { code: "H11", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Autorisation de fabricant ou de distributeur contradictoire", gravite: 2 },
+    { code: "H12", category: "H_FRAUDE_FAUSSES_DECLARATIONS", label: "Conflit d'intérêt entre groupements concurrents", gravite: 3 },
+    { code: "I01", category: "I_TAILLE_REGIME_FISCAL", label: "Régime simplifié d'imposition au lieu du Régime Normal" },
+    { code: "I02", category: "I_TAILLE_REGIME_FISCAL", label: "Micro-entreprise sur marché réservé aux PME" },
+    { code: "I03", category: "I_TAILLE_REGIME_FISCAL", label: "Grande entreprise sur marché réservé aux moyennes" },
+    { code: "I04", category: "I_TAILLE_REGIME_FISCAL", label: "Réel normal sur marché réservé aux petites entreprises" },
+    { code: "I05", category: "I_TAILLE_REGIME_FISCAL", label: "Document d'appartenance à la catégorie non fourni (CME, RSI)" },
+    { code: "I06", category: "I_TAILLE_REGIME_FISCAL", label: "Âge du gérant ou des associés hors de la tranche 15-35 ans" },
+    { code: "I07", category: "I_TAILLE_REGIME_FISCAL", label: "Direction masculine sur marché réservé à direction féminine" },
+  ];
+  for (const m of REJECTION_MOTIFS) {
+    await db.rejectionMotif.upsert({
+      where: { code: m.code },
+      update: {},
+      create: { code: m.code, category: m.category, label: m.label, gravite: m.gravite ?? 1, evitable: m.evitable ?? true },
+    });
+  }
+
+  console.log("→ Enrichissement entreprises (taille, régime fiscal, RCCM, PGES)");
+  await db.company.update({
+    where: { id: compXyz.id },
+    data: { rccm: "BF-OUA-01-2019-B12-04521", rccmNormalise: "BFOUA012019B1204521", formeJuridique: "SARL", tailleEntreprise: CompanySize.PETITE, regimeFiscal: TaxRegime.RSI_SIMPLIFIE, representantLegal: "Adama TRAORE", anneeCreation: 2019, ageGerant: 41, telephones: ["70123456"] },
+  });
+  await db.company.update({
+    where: { id: compSahelBtp.id },
+    data: { rccm: "BF-BOB-01-2015-B12-01187", rccmNormalise: "BFBOB012015B1201187", formeJuridique: "SA", tailleEntreprise: CompanySize.MOYENNE, regimeFiscal: TaxRegime.RNI_NORMAL, representantLegal: "Salif OUEDRAOGO", anneeCreation: 2015, ageGerant: 47, disposePges: true, dateValiditePges: new Date("2027-01-01"), telephones: ["76543210"] },
+  });
+  await db.company.update({
+    where: { id: compKambou.id },
+    data: { rccm: "BF-BOB-01-2012-A12-00892", rccmNormalise: "BFBOB012012A1200892", formeJuridique: "SARL", tailleEntreprise: CompanySize.MOYENNE, regimeFiscal: TaxRegime.RNI_NORMAL, representantLegal: "Kambou Issa", anneeCreation: 2012, ageGerant: 55, telephones: ["78901234"] },
+  });
+  await db.company.update({
+    where: { id: compCec.id },
+    data: { rccm: "BF-OUA-01-2017-B22-07743", rccmNormalise: "BFOUA012017B2207743", formeJuridique: "SARL", tailleEntreprise: CompanySize.PETITE, regimeFiscal: TaxRegime.RSI_SIMPLIFIE, representantLegal: "Fatimata SAWADOGO", anneeCreation: 2017, ageGerant: 34, telephones: ["71234567"] },
+  });
+  await db.company.update({
+    where: { id: compBurkinaTech.id },
+    data: { rccm: "BF-OUA-01-2020-B12-09981", rccmNormalise: "BFOUA012020B1209981", formeJuridique: "SARL", tailleEntreprise: CompanySize.PETITE, regimeFiscal: TaxRegime.CME_MICRO, representantLegal: "Rasmané ZONGO", anneeCreation: 2020, ageGerant: 29, telephones: ["72345678"] },
+  });
+
+  console.log("→ Agrément à trois dimensions (catégorie, domaine, couverture géographique)");
+  await db.companyLicense.create({
+    data: { companyId: compSahelBtp.id, label: "Agrément technique — Bâtiment catégorie B2", categorie: "B2", domaine: "Bâtiment", couvertureGeographique: "Hauts-Bassins, Cascades", expirationDate: new Date("2027-06-30") },
+  });
+
+  console.log("→ Moteur OAB multi-conventions sur les résultats existants");
+  const resultM5 = await db.result.findFirst({ where: { marketId: m5.id } });
+  if (resultM5) {
+    // Convention canonique : M = 0,6E + 0,4P ; BI = 0,85M ; BS = 1,15M ; ST = 0,95BI
+    const E = 18_000_000, P = 17_166_666;
+    const M = 0.6 * E + 0.4 * P;
+    await db.result.update({
+      where: { id: resultM5.id },
+      data: { seuil085M: Math.round(0.85 * M), seuil115M: Math.round(1.15 * M), seuilTolerance5pct: Math.round(0.85 * M * 0.95), oabConvention: OabConvention.CANONIQUE, scoreCoherence: 1.0 },
+    });
+  }
+  const resultM6 = await db.result.findFirst({ where: { marketId: m6.id } });
+  if (resultM6) {
+    // Cas "somme erronée" observé sur la région de Djôrô (section 3.3, variante C) — signalé, jamais corrigé.
+    await db.result.update({
+      where: { id: resultM6.id },
+      data: { seuil085M: 289_000_000, seuil115M: 391_000_000, oabConvention: OabConvention.SOMME_ERRONEE, scoreCoherence: 0.4 },
+    });
+  }
+
+  console.log("→ Montants distincts (soumissionné / corrigé / attribué) et motifs cumulés");
+  const bidXyzM5 = await db.bid.findFirst({ where: { marketId: m5.id, companyId: compXyz.id } });
+  if (bidXyzM5) {
+    await db.bid.update({ where: { id: bidXyzM5.id }, data: { rejectionMotifCodes: ["D02", "I05"] } });
+  }
+  const bidCecM5 = await db.bid.findFirst({ where: { marketId: m5.id, companyId: compCec.id } });
+  if (bidCecM5) {
+    await db.bid.update({ where: { id: bidCecM5.id }, data: { amountAwarded: 18_150_000, awardIncreasePct: 8.04 } });
+  }
+  const winningBidM6 = await db.bid.create({
+    data: { marketId: m6.id, companyId: compSahelBtp.id, amountRead: 320_000_000, amountCorrected: 320_000_000, amountAwarded: 332_500_000, awardIncreasePct: 3.91, conformity: true, rank: 1, submittedAt: new Date("2026-08-05T09:00:00Z") },
+  });
+  void winningBidM6;
+
+  console.log("→ Critère environnemental (PGES) et garantie de bonne exécution");
+  const lotsM6 = await db.marketLot.findMany({ where: { marketId: m6.id } });
+  if (lotsM6[0]) {
+    await db.marketLot.update({ where: { id: lotsM6[0].id }, data: { criterePges: true, tauxRabattementPgesPct: 3, tauxGarantieExecutionPct: 35 } });
+  }
+
+  console.log("→ Recours ARCOP qualifié (référence décision, organe)");
+  const appealM6 = await db.appeal.findFirst({ where: { marketId: m6.id } });
+  if (appealM6) {
+    await db.appeal.update({
+      where: { id: appealM6.id },
+      data: { appealType: AppealType.RECOURS_ARCOP, referenceDecision: "N°2026-L0308/ARCOP/ORD", organeDecision: ArcopOrgane.ORD },
+    });
+  }
+
+  console.log("→ Bailleurs avec régime procédural");
+  const donorIda = await db.donor.upsert({ where: { name: "Banque mondiale / IDA" }, update: {}, create: { name: "Banque mondiale / IDA", regimeProcedural: ProcurementRegime.BANQUE_MONDIALE } });
+  await db.donor.upsert({ where: { name: "BAD / FAD" }, update: {}, create: { name: "BAD / FAD", regimeProcedural: ProcurementRegime.BAD } });
+  await db.donor.upsert({ where: { name: "KfW" }, update: {}, create: { name: "KfW", regimeProcedural: ProcurementRegime.KFW } });
+  await db.donor.upsert({ where: { name: "Union Européenne" }, update: {}, create: { name: "Union Européenne", regimeProcedural: ProcurementRegime.UNION_EUROPEENNE } });
+  await db.funding.create({ data: { marketId: m4.id, source: FinancingSource.EXTERIEUR, donorId: donorIda.id, budget: 210_000_000 } });
+
+  console.log("→ Répertoire de fournisseurs (objet REP — section 3.1)");
+  const repertoire = await db.supplierDirectory.create({
+    data: {
+      contractingAuthorityId: ministereSante.id,
+      title: "Répertoire des prestataires référencés — fournitures médicales",
+      domaine: "Santé et biomédical",
+      exercices: ["2026", "2027", "2028"],
+      status: SupplierDirectoryStatus.PUBLIE,
+      publicationId: pub4468.id,
+      sourceDocumentId: doc4468.id,
+    },
+  });
+  await db.supplierDirectoryEntry.createMany({
+    data: [
+      { directoryId: repertoire.id, pliNumber: "001", companyId: compOugaMedical.id, rawName: "OUAGA MEDICAL EQUIPEMENT SARL", ifu: "00078901G", telephone: "70112233", ville: "Ouagadougou", anneeCreation: 2016, agrement: "Distributeur agréé matériel médical" },
+      { directoryId: repertoire.id, pliNumber: "002", rawName: "PHARMA DISTRIB BURKINA", ifu: "00099887K", rccm: "BF-OUA-01-2014-B12-02234", representantLegal: "Boureima KABORE", telephone: "70223344", ville: "Ouagadougou", anneeCreation: 2014 },
+      { directoryId: repertoire.id, pliNumber: "003", rawName: "SANTE EQUIPEMENT SAHEL", ifu: "00077665L", telephone: "70334455", ville: "Bobo-Dioulasso", anneeCreation: 2018 },
+    ],
+  });
+
   console.log("→ Statistiques précalculées (échantillon)");
   await db.analyticsSnapshot.createMany({
     data: [
@@ -696,6 +891,7 @@ async function main() {
       { dimension: "region", dimensionKey: "Centre", metric: "market_count", period: "2026-08", value: 6 },
       { dimension: "authority", dimensionKey: ministereEducation.name, metric: "market_count", period: "2026-08", value: 2 },
     ],
+    skipDuplicates: true,
   });
 
   console.log("✓ Seed terminé");

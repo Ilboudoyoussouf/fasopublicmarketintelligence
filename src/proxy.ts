@@ -17,6 +17,9 @@ export default auth((req) => {
   const isPublic =
     PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/")) ||
     pathname.startsWith("/api/auth") ||
+    // Le robot d'ingestion quotidien (cron Vercel) s'authentifie par
+    // CRON_SECRET dans son propre handler, pas par session utilisateur.
+    pathname.startsWith("/api/cron/") ||
     pathname === "/";
 
   if (!req.auth && !isPublic) {

@@ -7,7 +7,7 @@ import type { SourceConnector } from "@/lib/ingestion/connector";
 import { getRawStorage } from "@/lib/ingestion/storage";
 import { extractPdfText } from "@/lib/ingestion/extract-text";
 import { segmentAndClassify } from "@/lib/ingestion/parser";
-import { findMatchingMarket } from "@/lib/ingestion/dedupe";
+import { findMatchingMarket, registerBlockOrDetectDuplicate } from "@/lib/ingestion/dedupe";
 import {
   ExtractionJobStage, ExtractionJobStatus, DataQualityStatus,
   PublicationKind, MarketStatus, ProcedureType, PublicationType,
@@ -130,14 +130,24 @@ export async function processDocument(documentId: string) {
 
   let createdMarkets = 0;
   let updatedMarkets = 0;
+  let republishedBlocks = 0;
 
   await runJob(documentId, ExtractionJobStage.EXTRACT, async () => {
     for (const candidate of candidates) {
       if (!candidate.title) continue;
 
+      // Déduplication par hash de bloc (section 1.3) : un encart publicitaire
+      // ou un résultat identique republié dans un autre numéro n'est jamais
+      // recréé — il est journalisé et ignoré.
+      const dedupe = await registerBlockOrDetectDuplicate(candidate.rawBlock, documentId);
+      if (dedupe.isRepublished) {
+        republishedBlocks++;
+        continue;
+      }
+
       const existingMarket = await findMatchingMarket(candidate);
       const authority = candidate.authorityGuess
-        ? await prisma.contractingAuthority.findFirst({ where: { name: { contains: candidate.authorityGuess.slice(0, 30), mode: "insensitive" } } })
+        ? await prisma.contractingAuthority.findFirst({ where: { name: { contains: candidate.authorityGuess.slice(0, 30) } } })
         : null;
 
       if (existingMarket) {
@@ -193,7 +203,11 @@ export async function processDocument(documentId: string) {
     await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: lowConfidence ? "EXTRACTED" : "VALIDATED" } });
   });
 
-  return { status: "ok" as const, candidatesFound: candidates.length, createdMarkets, updatedMarkets };
+  if (republishedBlocks > 0) {
+    console.log(`[ingestion] ${republishedBlocks} bloc(s) republié(s) détecté(s) et ignoré(s) dans ${document.filename} (déduplication par hash).`);
+  }
+
+  return { status: "ok" as const, candidatesFound: candidates.length, createdMarkets, updatedMarkets, republishedBlocks };
 }
 
 export async function runFullIngestion(sourceId: string) {
