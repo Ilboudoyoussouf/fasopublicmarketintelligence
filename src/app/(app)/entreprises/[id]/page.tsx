@@ -5,7 +5,7 @@ import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { StateNotice } from "@/components/ui/StateNotice";
 import { ChartCard } from "@/components/charts/ChartCard";
-import { SimpleDonutChart } from "@/components/charts/Charts";
+import { SimpleDonutChart, SimpleScatterChart } from "@/components/charts/Charts";
 import { formatFcfa, formatDate } from "@/lib/utils";
 import { REJECTION_REASON_LABEL } from "@/lib/labels";
 
@@ -44,6 +44,17 @@ export default async function EntrepriseDetailPage({ params }: { params: Promise
   for (const p of competitorParticipations) competitorCompanyIds.add(p.companyId);
   const competitors = await prisma.company.findMany({ where: { id: { in: [...competitorCompanyIds].slice(0, 8) } } });
 
+  // Position concurrentielle — fréquence × valeur (§17)
+  const competitorAllParticipations = await prisma.companyParticipation.findMany({ where: { companyId: { in: competitors.map((c) => c.id) } } });
+  const positionData = [
+    { name: company.canonicalName, frequence: participations.length, valeur: Math.round(totalAwarded / 1_000_000), self: true },
+    ...competitors.map((c) => {
+      const own = competitorAllParticipations.filter((p) => p.companyId === c.id);
+      const value = own.filter((p) => p.role === "WINNER").reduce((s, p) => s + Number(p.amount ?? 0), 0);
+      return { name: c.canonicalName, frequence: own.length, valeur: Math.round(value / 1_000_000), self: false };
+    }),
+  ].filter((d) => d.frequence > 0);
+
   return (
     <div className="mx-auto max-w-4xl space-y-4">
       <div>
@@ -73,6 +84,20 @@ export default async function EntrepriseDetailPage({ params }: { params: Promise
           <Row label="Marchés perdus / disqualifiés" value={String(losses)} />
         </CardBody>
       </Card>
+
+      {positionData.length > 1 && (
+        <ChartCard title="Position concurrentielle — fréquence × valeur" period="historique disponible" unit="M FCFA" source="Résultats officiels" height={260}>
+          <SimpleScatterChart
+            data={positionData}
+            xKey="frequence"
+            yKey="valeur"
+            xLabel="Fréquence (marchés)"
+            yLabel="Valeur (M FCFA)"
+            nameKey="name"
+            highlightValue={company.canonicalName}
+          />
+        </ChartCard>
+      )}
 
       {rejectionCounts.size > 0 && (
         <ChartCard title="Causes d'échec" period="historique disponible" source="Résultats officiels" height={220}>

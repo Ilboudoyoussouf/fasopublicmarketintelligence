@@ -104,7 +104,7 @@ export function SimpleDonutChart({ data, nameKey, valueKey }: { data: Record<str
  * visuellement plutôt que laissée à l'utilisateur à déduire.
  */
 export function SimpleScatterChart({
-  data, xKey, yKey, xLabel, yLabel, idealZone,
+  data, xKey, yKey, xLabel, yLabel, idealZone, nameKey, highlightValue,
 }: {
   data: Record<string, unknown>[];
   xKey: string;
@@ -113,6 +113,9 @@ export function SimpleScatterChart({
   yLabel: string;
   /** Bornes de la zone à mettre en avant (ex. faible concurrence + forte valeur). */
   idealZone?: { x1: number; x2: number; y1: number; y2: number; label?: string };
+  /** Avec highlightValue : seul le point nameKey===highlightValue reste orange, les autres passent en gris (§17). */
+  nameKey?: string;
+  highlightValue?: string;
 }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -128,7 +131,11 @@ export function SimpleScatterChart({
           />
         )}
         <Tooltip cursor={{ strokeDasharray: "3 3", stroke: TICK }} contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} />
-        <Scatter data={data} fill={ORANGE} />
+        <Scatter data={data} fill={ORANGE}>
+          {nameKey && data.map((d, i) => (
+            <Cell key={i} fill={d[nameKey] === highlightValue ? ORANGE : NEUTRAL} />
+          ))}
+        </Scatter>
       </ScatterChart>
     </ResponsiveContainer>
   );
