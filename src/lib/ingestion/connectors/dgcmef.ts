@@ -77,6 +77,11 @@ export function parseListingHtml(html: string, baseUrl: string): DiscoveredPubli
   return [...byNumero.values()].sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
 }
 
+/** Exposé pour le diagnostic (`/api/cron/ingest-dgcmef?debug=1`) : permet d'inspecter la page réelle sans dépendre d'un connecteur déjà construit. */
+export async function fetchListingHtml(baseUrl: string): Promise<string> {
+  return defaultFetcher(baseUrl)();
+}
+
 export function createDgcmefConnector(baseUrl: string, fetcher?: ListingFetcher): SourceConnector {
   const getListing = fetcher ?? defaultFetcher(baseUrl);
   return {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { runFullIngestion } from "@/lib/ingestion/pipeline";
+import { fetchListingHtml, parseListingHtml } from "@/lib/ingestion/connectors/dgcmef";
 
 export const maxDuration = 300; // 5 min — le crawl + l'extraction de plusieurs PDF peuvent prendre du temps
 
@@ -25,6 +26,39 @@ export async function GET(req: NextRequest) {
   }
 
   const sources = await prisma.source.findMany({ where: { isActive: true } });
+
+  // Mode diagnostic — lecture seule, n'écrit rien en base. Permet de vérifier
+  // que le connecteur retrouve bien les quotidiens réels avant de lancer une
+  // ingestion complète (utile car cet environnement de développement n'a pas
+  // d'accès réseau sortant vers dgcmef.gov.bf pour tester autrement).
+  const debug = req.nextUrl.searchParams.get("debug") === "1";
+  if (debug) {
+    const diagnostics = [];
+    for (const source of sources) {
+      try {
+        const html = await fetchListingHtml(source.baseUrl);
+        const publications = parseListingHtml(html, source.baseUrl);
+        diagnostics.push({
+          source: source.name,
+          baseUrl: source.baseUrl,
+          htmlLength: html.length,
+          htmlExcerpt: req.nextUrl.searchParams.get("html") === "1" ? html.slice(0, 3000) : undefined,
+          publicationsFound: publications.length,
+          publications: publications.map((p) => ({
+            numero: p.numero,
+            isDoubleIssue: p.isDoubleIssue,
+            publishedAt: p.publishedAt.toISOString(),
+            title: p.title,
+            documents: p.documents.map((d) => ({ filename: d.filename, url: d.url, isBis: d.isBis })),
+          })),
+        });
+      } catch (err) {
+        diagnostics.push({ source: source.name, baseUrl: source.baseUrl, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return NextResponse.json({ mode: "debug", ranAt: new Date().toISOString(), diagnostics });
+  }
+
   const results: { source: string; ok: boolean; publicationsScanned?: number; newDocuments?: number; republishedBlocks?: number; error?: string }[] = [];
 
   for (const source of sources) {
