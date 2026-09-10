@@ -1,6 +1,7 @@
 // Extraction PDF → texte, avec repli OCR (section 40, 94).
 // « Retry automatique → OCR → fallback parser → validation humaine » :
 // aucun document ne doit être silencieusement perdu.
+import "./pdf-canvas-polyfill";
 import { PDFParse } from "pdf-parse";
 
 export type PageText = { pageNumber: number; text: string; confidence: number };
