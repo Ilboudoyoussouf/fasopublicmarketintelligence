@@ -967,7 +967,16 @@ export async function analyzeUploadedPdf(params: {
 // prendre plusieurs minutes, bien au-delà de ce que tolère le proxy inverse
 // devant l'hébergement) — le client suit la progression par polling
 // (getAnalysisStatus).
-export function ingestExistingDocument(documentId: string, buffer: Buffer): void {
+export async function ingestExistingDocument(documentId: string, buffer: Buffer): Promise<void> {
+  // Efface l'état précédent (celui de l'aperçu Gemini qui a échoué, ce qui
+  // a précisément amené à ce repli) AVANT de lancer le traitement en
+  // arrière-plan et de rendre la main à l'appelant — sans ça, un polling
+  // qui démarre juste après l'appel de cette fonction lit encore l'ancien
+  // résultat resté en base et croit à tort que ce nouveau passage vient de
+  // se terminer aussitôt (constaté en pratique). Cette écriture est rapide
+  // (pas d'appel Gemini) — seul le traitement qui suit reste en arrière-plan.
+  await prisma.document.update({ where: { id: documentId }, data: { pendingAnalysis: Prisma.JsonNull } });
+
   (async () => {
     try {
       const result = await processDocumentBuffer(documentId, buffer);

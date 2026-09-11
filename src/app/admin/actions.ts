@@ -77,7 +77,7 @@ export async function ingestExistingDocumentAction(documentId: string, file: Fil
   await requirePlatformAdmin();
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    ingestExistingDocument(documentId, buffer);
+    await ingestExistingDocument(documentId, buffer);
     return { ok: true as const, documentId };
   } catch (err) {
     return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
