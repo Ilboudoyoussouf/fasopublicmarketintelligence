@@ -22,8 +22,9 @@ export function UploadQuotidienForm({ sources }: { sources: { id: string; name: 
         return;
       }
       if (result.status === "ok") {
+        const methodLabel = result.extractionMethod === "gemini" ? "IA (Gemini)" : "règles (repli)";
         setMessage(
-          `${result.candidatesFound} avis détecté(s) dans le document · ${result.createdMarkets} marché(s) créé(s)` +
+          `Extraction par ${methodLabel} · ${result.candidatesFound} avis détecté(s) dans le document · ${result.createdMarkets} marché(s) créé(s)` +
             `${result.updatedMarkets ? ` · ${result.updatedMarkets} mise(s) à jour` : ""}` +
             `${result.republishedBlocks ? ` · ${result.republishedBlocks} republication(s) ignorée(s)` : ""}` +
             `${result.skippedUnmatchedUpdates ? ` · ${result.skippedUnmatchedUpdates} résultat(s)/rectificatif(s) sans marché d'origine connu ignoré(s)` : ""}.`,

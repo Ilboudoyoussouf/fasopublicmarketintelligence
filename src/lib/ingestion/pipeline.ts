@@ -7,11 +7,12 @@ import type { SourceConnector } from "@/lib/ingestion/connector";
 import { getRawStorage } from "@/lib/ingestion/storage";
 import { extractPdfText } from "@/lib/ingestion/extract-text";
 import { segmentAndClassify } from "@/lib/ingestion/parser";
-import { findMatchingMarket, registerBlockOrDetectDuplicate } from "@/lib/ingestion/dedupe";
+import { extractNoticesWithGemini, isGeminiConfigured, type GeminiNotice } from "@/lib/ingestion/gemini-extractor";
+import { findMatchingMarket, registerBlockOrDetectDuplicate, jaccardSimilarity } from "@/lib/ingestion/dedupe";
 import {
   ExtractionJobStage, ExtractionJobStatus, DataQualityStatus,
   PublicationKind, MarketStatus, ProcedureType, PublicationType,
-  RequirementType, RequiredDocType, OrganizationType,
+  RequirementType, RequiredDocType, OrganizationType, SectorGroup,
 } from "@prisma/client";
 
 function getConnectorFor(sourceName: string, baseUrl: string): SourceConnector {
@@ -38,29 +39,85 @@ function guessAuthorityType(name: string): OrganizationType {
 // d'autorité déjà connue (perte de donnée réelle contraire à la section 94),
 // on la crée à la volée à partir du nom extrait tel qu'il apparaît dans le
 // quotidien (verbatim, pas de reformatage qui introduirait une supposition).
-async function resolveOrCreateAuthority(authorityGuess: string) {
+async function resolveOrCreateAuthority(authorityGuess: string, explicitType?: OrganizationType) {
   const name = authorityGuess.slice(0, 190); // VARCHAR(191)
   const existing = await prisma.contractingAuthority.findFirst({ where: { name: { contains: authorityGuess.slice(0, 30) } } });
   if (existing) return existing;
 
   const country = await prisma.country.findFirstOrThrow();
   try {
-    return await prisma.contractingAuthority.create({ data: { countryId: country.id, name, type: guessAuthorityType(name) } });
+    return await prisma.contractingAuthority.create({ data: { countryId: country.id, name, type: explicitType ?? guessAuthorityType(name) } });
   } catch {
     // Conflit d'unicité (countryId, name) : une création concurrente a eu lieu entre-temps.
     return prisma.contractingAuthority.findFirst({ where: { countryId: country.id, name } });
   }
 }
 
-async function runJob(documentId: string, stage: ExtractionJobStage, fn: () => Promise<void>) {
+async function resolveOrCreateRegion(regionName: string | null) {
+  if (!regionName) return null;
+  const name = regionName.slice(0, 190);
+  const existing = await prisma.region.findFirst({ where: { name: { contains: name.slice(0, 20) } } });
+  if (existing) return existing;
+  const country = await prisma.country.findFirstOrThrow();
+  try {
+    return await prisma.region.create({ data: { countryId: country.id, name } });
+  } catch {
+    return prisma.region.findFirst({ where: { countryId: country.id, name } });
+  }
+}
+
+const SECTOR_GROUP_LABELS: Record<SectorGroup, string> = {
+  [SectorGroup.FOURNITURES_SERVICES]: "Fournitures et services courants",
+  [SectorGroup.TRAVAUX]: "Travaux",
+  [SectorGroup.PRESTATIONS_INTELLECTUELLES]: "Prestations intellectuelles",
+};
+
+// Gemini ne renseigne que la catégorie large (section "Fournitures et
+// Services courants" / "Travaux" / "Prestations Intellectuelles", lue en
+// tête de chaque avis) — jamais un sous-secteur précis, qui exigerait une
+// taxonomie métier fine hors de portée d'une extraction document par
+// document. On rattache donc à un secteur générique par catégorie plutôt
+// que d'inventer une classification plus précise que ce que le texte permet
+// réellement de déterminer.
+async function resolveOrCreateSector(group: SectorGroup | null) {
+  if (!group) return null;
+  const name = SECTOR_GROUP_LABELS[group];
+  const existing = await prisma.sector.findFirst({ where: { group, name } });
+  if (existing) return existing;
+  try {
+    return await prisma.sector.create({ data: { group, name } });
+  } catch {
+    return prisma.sector.findFirst({ where: { group, name } });
+  }
+}
+
+async function resolveOrCreateCompany(companyName: string | null) {
+  if (!companyName) return null;
+  const canonicalName = companyName.slice(0, 190);
+  const existing = await prisma.company.findFirst({ where: { canonicalName: { contains: canonicalName.slice(0, 20) } } });
+  if (existing) return existing;
+  const country = await prisma.country.findFirstOrThrow();
+  try {
+    return await prisma.company.create({ data: { countryId: country.id, canonicalName } });
+  } catch {
+    return prisma.company.findFirst({ where: { countryId: country.id, canonicalName } });
+  }
+}
+
+async function runJob<T>(documentId: string, stage: ExtractionJobStage, fn: () => Promise<T>): Promise<T> {
   const job = await prisma.extractionJob.create({ data: { documentId, stage, status: ExtractionJobStatus.RUNNING, attempts: 1, startedAt: new Date() } });
   try {
-    await fn();
+    const result = await fn();
     await prisma.extractionJob.update({ where: { id: job.id }, data: { status: ExtractionJobStatus.SUCCEEDED, finishedAt: new Date() } });
+    return result;
   } catch (err) {
     await prisma.extractionJob.update({
       where: { id: job.id },
-      data: { status: ExtractionJobStatus.FAILED, finishedAt: new Date(), errorMessage: err instanceof Error ? err.message : String(err) },
+      // Tronqué à la longueur de colonne (VARCHAR(191)) : sans ça, un message
+      // d'erreur verbeux (ex. détail de validation Gemini) fait échouer cette
+      // écriture elle-même, masquant la vraie cause derrière une erreur Prisma
+      // secondaire sans rapport (constaté en pratique).
+      data: { status: ExtractionJobStatus.FAILED, finishedAt: new Date(), errorMessage: (err instanceof Error ? err.message : String(err)).slice(0, 190) },
     });
     throw err;
   }
@@ -142,6 +199,116 @@ const PROCEDURE_MAP: Record<string, ProcedureType> = {
   DEMANDE_PROPOSITIONS_ALLEGEE: ProcedureType.DEMANDE_PROPOSITIONS_ALLEGEE,
 };
 
+const AUTHORITY_TYPE_MAP: Record<string, OrganizationType> = {
+  MINISTERE: OrganizationType.MINISTERE,
+  INSTITUTION: OrganizationType.INSTITUTION,
+  EPE: OrganizationType.EPE,
+  REGION: OrganizationType.REGION,
+  PROVINCE: OrganizationType.PROVINCE,
+  COMMUNE: OrganizationType.COMMUNE,
+  PROJET: OrganizationType.PROJET,
+  AUTRE: OrganizationType.AUTRE,
+};
+
+// Statut du marché après un contenu de suivi (résultat/attribution/
+// rectificatif/annulation/reprise/réexamen/recours) — dérivé du type de
+// publication et, pour un résultat, du texte de décision ("infructueux" =
+// aucune offre retenue, jamais un marché "attribué").
+function statusAfterFollowUp(publicationType: string, decision: string | null): MarketStatus | null {
+  const decisionLower = (decision ?? "").toLowerCase();
+  switch (publicationType) {
+    case "RESULTAT_PROVISOIRE":
+    case "ATTRIBUTION":
+      return /infructueux|sans suite|d[ée]clar[ée]e? infructueuse/.test(decisionLower) ? MarketStatus.CLOTURE : MarketStatus.ATTRIBUE;
+    case "RECTIFICATIF":
+      return MarketStatus.RECTIFIE;
+    case "ANNULATION":
+      return MarketStatus.ANNULE;
+    case "REPRISE":
+      return MarketStatus.REPRIS;
+    case "REEXAMEN":
+      return MarketStatus.EN_REEXAMEN;
+    case "DECISION_RECOURS":
+      return MarketStatus.EN_RECOURS;
+    default:
+      return null;
+  }
+}
+
+async function findMarketForGeminiNotice(notice: GeminiNotice) {
+  const candidateRefs = [notice.relatedReference, notice.reference].filter((r): r is string => Boolean(r));
+  for (const ref of candidateRefs) {
+    const market = await prisma.market.findFirst({ where: { reference: ref } });
+    if (market) return market;
+  }
+  if (!notice.title) return null;
+
+  const recentMarkets = await prisma.market.findMany({
+    where: { createdAt: { gte: new Date(Date.now() - 90 * 86_400_000) } },
+    select: { id: true, title: true },
+    take: 500,
+  });
+  for (const m of recentMarkets) {
+    if (jaccardSimilarity(notice.title, m.title) >= 0.55) {
+      return prisma.market.findUnique({ where: { id: m.id } });
+    }
+  }
+  return null;
+}
+
+// Enregistre un résultat/attribution sur un marché déjà connu — un par lot
+// quand le marché en comporte, sinon un résultat global. Sans ce passage,
+// un contenu de suivi ne faisait que journaliser un événement générique
+// (MarketEvent) sans jamais renseigner qui a gagné, pour quel montant :
+// des champs pourtant demandés ("tous les champs de marché doivent être
+// remplis").
+async function recordFollowUpResult(market: { id: string }, notice: GeminiNotice, documentId: string, publishedAt: Date) {
+  const resultAt = notice.resultAt ?? publishedAt;
+  const lotsWithOutcome = notice.lots.filter((l) => l.awardedAmount !== null || l.winnerCompanyName !== null);
+
+  if (lotsWithOutcome.length > 0) {
+    for (const lot of lotsWithOutcome) {
+      const winner = await resolveOrCreateCompany(lot.winnerCompanyName);
+      const marketLot = await prisma.marketLot.findFirst({ where: { marketId: market.id, numero: lot.numero } });
+      await prisma.result.create({
+        data: {
+          marketId: market.id,
+          lotId: marketLot?.id,
+          winnerCompanyId: winner?.id,
+          awardedAmount: lot.awardedAmount,
+          decision: notice.decision,
+          resultAt,
+          sourceDocumentId: documentId,
+        },
+      });
+      if (marketLot && winner) {
+        await prisma.marketLot.update({ where: { id: marketLot.id }, data: { attributaireCompanyId: winner.id } });
+      }
+    }
+  } else if (notice.winnerCompanyName || notice.awardedAmount !== null || notice.decision) {
+    const winner = await resolveOrCreateCompany(notice.winnerCompanyName);
+    await prisma.result.create({
+      data: {
+        marketId: market.id,
+        winnerCompanyId: winner?.id,
+        awardedAmount: notice.awardedAmount,
+        numberOfBids: notice.numberOfBids,
+        decision: notice.decision,
+        resultAt,
+        sourceDocumentId: documentId,
+      },
+    });
+  }
+
+  const status = statusAfterFollowUp(notice.publicationType, notice.decision);
+  if (status) {
+    await prisma.market.update({
+      where: { id: market.id },
+      data: { status, amountAwarded: notice.awardedAmount ?? undefined, resultAt },
+    });
+  }
+}
+
 /** Traite un document déjà découvert : téléchargement → extraction → classification → structuration → validation. */
 export async function processDocument(documentId: string) {
   const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, include: { publication: { include: { source: true } } } });
@@ -168,6 +335,153 @@ export async function processDocument(documentId: string) {
 // de processDocument() pour être réutilisable par ingestUploadedPdf() sans
 // dupliquer la logique de création des marchés (section 94 : jamais deux
 // chemins de vérité pour la même donnée).
+// Crée les marchés (et enregistre les résultats de suivi) à partir d'une
+// extraction Gemini — pendant enrichi de la boucle EXTRACT ci-dessous, mais
+// avec les champs supplémentaires que seule une lecture sémantique du PDF
+// permet de remplir de façon fiable (secteur, région, financement,
+// calendrier complet, lauréat et montant attribué).
+async function processGeminiNotices(
+  notices: GeminiNotice[],
+  document: { id: string; publicationId: string; publication: { publishedAt: Date; numero: string } },
+  documentId: string,
+) {
+  let createdMarkets = 0;
+  let updatedMarkets = 0;
+  let skippedUnmatchedUpdates = 0;
+
+  for (const notice of notices) {
+    if (!notice.title) continue;
+
+    const existingMarket = await findMarketForGeminiNotice(notice);
+
+    if (existingMarket) {
+      if (!notice.isFreshCall) {
+        await recordFollowUpResult(existingMarket, notice, documentId, document.publication.publishedAt);
+      }
+      await prisma.marketEvent.create({
+        data: {
+          marketId: existingMarket.id,
+          type: "MARKET_UPDATED",
+          occurredAt: document.publication.publishedAt,
+          sourceDocumentId: documentId,
+          description: `Nouvelle mention détectée dans le quotidien n°${document.publication.numero} (extraction Gemini).`,
+        },
+      });
+      updatedMarkets++;
+      continue;
+    }
+
+    if (!notice.isFreshCall) {
+      skippedUnmatchedUpdates++;
+      continue;
+    }
+
+    const authority = notice.authorityName
+      ? await resolveOrCreateAuthority(notice.authorityName, AUTHORITY_TYPE_MAP[notice.authorityType] ?? OrganizationType.AUTRE)
+      : null;
+    if (!authority) continue; // aucune autorité identifiable — pas de marché incomplet créé
+
+    const [sector, region] = await Promise.all([
+      resolveOrCreateSector(notice.sectorGroup as SectorGroup | null),
+      resolveOrCreateRegion(notice.regionName),
+    ]);
+
+    const market = await prisma.market.create({
+      data: {
+        reference: notice.reference,
+        title: notice.title,
+        publicationType: notice.publicationType as PublicationType,
+        procedureType: notice.procedureType ? (PROCEDURE_MAP[notice.procedureType] ?? ProcedureType.AUTRE) : ProcedureType.AUTRE,
+        status: MarketStatus.PUBLIE,
+        contractingAuthorityId: authority.id,
+        sectorId: sector?.id,
+        regionId: region?.id,
+        siteDetail: notice.siteDetail,
+        keywords: notice.keywords,
+        financingSource: notice.financingSource ?? undefined,
+        financingDetail: notice.financingDetail,
+        amountEstimatedExclTax: notice.amountEstimatedExclTax,
+        amountEstimatedInclTax: notice.amountEstimatedInclTax,
+        currency: notice.currency,
+        submissionDeadline: notice.submissionDeadline,
+        withdrawalDeadline: notice.withdrawalDeadline,
+        submissionTime: notice.submissionTime,
+        openingAt: notice.openingAt,
+        bidValidityDays: typeof notice.bidValidityDays === "number" ? Math.round(notice.bidValidityDays) : null,
+        executionDelayDays: typeof notice.executionDelayDays === "number" ? Math.round(notice.executionDelayDays) : null,
+        publishedAt: document.publication.publishedAt,
+        sourcePublicationId: document.publicationId,
+        sourceDocumentId: documentId,
+      },
+    });
+
+    await prisma.notice.create({
+      data: {
+        marketId: market.id, publicationId: document.publicationId, documentId,
+        publicationType: market.publicationType, publishedAt: document.publication.publishedAt,
+        rawExcerpt: notice.rawExcerpt || null,
+      },
+    });
+    await prisma.marketEvent.create({ data: { marketId: market.id, type: "MARKET_CREATED", occurredAt: document.publication.publishedAt, sourceDocumentId: documentId } });
+
+    if (notice.requirements.length > 0) {
+      await prisma.requirement.createMany({
+        data: notice.requirements.map((r) => ({
+          marketId: market.id,
+          type: r.type as RequirementType,
+          rawText: r.rawText,
+          thresholdValue: r.thresholdValue,
+          thresholdUnit: r.thresholdUnit,
+          confidence: notice.confidence,
+        })),
+      });
+    }
+    if (notice.requiredDocuments.length > 0) {
+      await prisma.marketRequiredDocument.createMany({
+        data: notice.requiredDocuments.map((d) => ({
+          marketId: market.id,
+          docType: d.docType as RequiredDocType,
+          mandatory: d.mandatory,
+          rawText: d.rawText,
+        })),
+      });
+    }
+    if (notice.lots.length > 0) {
+      await prisma.marketLot.createMany({
+        data: notice.lots.map((l) => ({
+          marketId: market.id,
+          numero: l.numero,
+          objet: l.objet,
+          description: l.description,
+          montant: l.montant,
+          quantite: l.quantite,
+          unite: l.unite,
+        })),
+      });
+    }
+
+    for (const [field, hasValue] of [
+      ["amountEstimatedExclTax", notice.amountEstimatedExclTax !== null],
+      ["submissionDeadline", notice.submissionDeadline !== null],
+      ["reference", notice.reference !== null],
+      ["requirements", notice.requirements.length > 0],
+      ["requiredDocuments", notice.requiredDocuments.length > 0],
+    ] as [string, boolean][]) {
+      await prisma.dataQualityCheck.create({
+        data: {
+          entityType: "Market", entityId: market.id, field,
+          status: notice.confidence >= AUTO_APPROVE_CONFIDENCE_THRESHOLD ? DataQualityStatus.EXTRAIT_AUTOMATIQUEMENT : DataQualityStatus.INCERTAIN,
+          confidence: hasValue ? notice.confidence : 0.2,
+          extractionMethod: "gemini",
+        },
+      });
+    }
+    createdMarkets++;
+  }
+
+  return { createdMarkets, updatedMarkets, skippedUnmatchedUpdates };
+}
+
 async function processDocumentBuffer(documentId: string, buffer: Buffer) {
   const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, include: { publication: true } });
 
@@ -190,6 +504,40 @@ async function processDocumentBuffer(documentId: string, buffer: Buffer) {
   }).catch(() => null);
 
   if (!fullText) return { status: "extraction_failed" as const };
+
+  // Gemini (lecture native du PDF — mise en page, tableaux) est la voie
+  // principale quand une clé est configurée ; le parseur regex reste le
+  // repli automatique en cas d'échec (clé absente, réseau, quota, réponse
+  // non conforme) — jamais de document non traité (section 94).
+  async function tryGeminiExtraction(): Promise<GeminiNotice[] | null> {
+    if (!isGeminiConfigured()) return null;
+    try {
+      return await runJob(documentId, ExtractionJobStage.CLASSIFY, async () => {
+        const notices = await extractNoticesWithGemini(buffer);
+        await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "CLASSIFIED" } });
+        return notices;
+      });
+    } catch (err) {
+      console.error(`[ingestion] Extraction Gemini échouée pour ${document.filename}, repli sur le parseur regex :`, err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+  const geminiNotices = await tryGeminiExtraction();
+
+  if (geminiNotices) {
+    const result = await runJob(documentId, ExtractionJobStage.EXTRACT, () => processGeminiNotices(geminiNotices, document, documentId));
+    await runJob(documentId, ExtractionJobStage.VALIDATE, async () => {
+      const lowConfidence = geminiNotices.some((n) => n.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD);
+      await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: lowConfidence ? "EXTRACTED" : "VALIDATED" } });
+    });
+    return {
+      status: "ok" as const,
+      candidatesFound: geminiNotices.length,
+      extractionMethod: "gemini" as const,
+      republishedBlocks: 0,
+      ...result,
+    };
+  }
 
   let candidates: ReturnType<typeof segmentAndClassify> = [];
   await runJob(documentId, ExtractionJobStage.CLASSIFY, async () => {
@@ -326,7 +674,7 @@ async function processDocumentBuffer(documentId: string, buffer: Buffer) {
     console.log(`[ingestion] ${republishedBlocks} bloc(s) republié(s) détecté(s) et ignoré(s) dans ${document.filename} (déduplication par hash).`);
   }
 
-  return { status: "ok" as const, candidatesFound: candidates.length, createdMarkets, updatedMarkets, republishedBlocks, skippedUnmatchedUpdates };
+  return { status: "ok" as const, candidatesFound: candidates.length, extractionMethod: "regex-heuristic" as const, createdMarkets, updatedMarkets, republishedBlocks, skippedUnmatchedUpdates };
 }
 
 export async function runFullIngestion(sourceId: string) {
