@@ -104,3 +104,65 @@ Date limite : 05/09/2026.
     expect(candidate.requiredDocuments).toHaveLength(0);
   });
 });
+
+// Structure vérifiée sur un quotidien DGCMEF réel (n°4486, 11/09/2026) : le
+// titre et l'autorité contractante précèdent l'en-tête du type d'avis (pas
+// de label "Objet :"), et les montants sont écrits en toutes lettres suivis
+// de la valeur numérique entre parenthèses, parfois après un retour à la
+// ligne. Le corps répète aussi l'expression de l'en-tête en minuscules
+// ("cet avis de demande de prix…"), ce qui doit rester sans effet sur la
+// segmentation.
+describe("segmentAndClassify — structure réelle des quotidiens DGCMEF", () => {
+  const realSample = `
+Fournitures et Services courants
+MINISTERE DE L'AGRICULTURE, DE L'EAU, DES RESSOURCES ANIMALES ET HALIEUTIQUES
+
+Acquisition de petits matériels agricoles et de transformation au profit du Projet
+de construction de Barrages dans la Province du Ganzourgou au Burkina Faso
+AVIS D'APPEL D'OFFRES OUVERT NATIONAL
+N°2026-16F/MAERAH/SG/DMP
+
+1. Description du marché
+Le Ministère sollicite des offres sous plis fermés. Le montant prévisionnel du marché est de
+dix-sept millions sept cent quatre-vingt-seize mille six cent dix
+(17 796 610) francs CFA en HTVA et vingt-et-un millions (21 000 000) francs CFA en TTC.
+Date limite de dépôt des offres : 21/09/2026.
+
+Travaux
+COMMUNE DE TIBGA
+
+Travaux de construction d'infrastructures scolaires dans la commune de Tibga
+AVIS DE DEMANDE DE PRIX
+N°2026-002/REST/PGRM/CTBG/SG/PRCP
+Financement : ADCT-Budget Communal, gestion 2026
+
+1- Cet avis de demande de prix fait suite à l'adoption du plan de passation des marchés publics.
+2- La commune de Tibga sollicite des offres pour financer ces travaux.
+3- La présente demande de prix est réservée : aux micros et petites entreprises ;
+4- Date limite de dépôt des offres : 25/09/2026.
+`;
+
+  it("extrait le titre et l'autorité depuis le préambule qui précède l'en-tête (pas de label « Objet : »)", () => {
+    const [first, second] = segmentAndClassify(realSample);
+    expect(first.authorityGuess).toBe("MINISTERE DE L'AGRICULTURE, DE L'EAU, DES RESSOURCES ANIMALES ET HALIEUTIQUES");
+    expect(first.title).toContain("Acquisition de petits matériels agricoles");
+    expect(second.authorityGuess).toBe("COMMUNE DE TIBGA");
+    expect(second.title).toBe("Travaux de construction d'infrastructures scolaires dans la commune de Tibga");
+  });
+
+  it("n'ouvre pas un nouveau bloc sur une occurrence en minuscules du type d'avis dans le corps du texte", () => {
+    const candidates = segmentAndClassify(realSample);
+    expect(candidates).toHaveLength(2);
+  });
+
+  it("extrait un montant écrit en toutes lettres avec la valeur entre parenthèses (avec retour à la ligne avant la parenthèse)", () => {
+    const [first] = segmentAndClassify(realSample);
+    expect(first.amountExclTax).toBe(17_796_610);
+  });
+
+  it("reconnaît une réservation aux micros et petites entreprises écrite en toutes lettres", () => {
+    const [, second] = segmentAndClassify(realSample);
+    const types = second.requirements.map((r) => r.type);
+    expect(types).toContain("CONDITIONS_RESERVATION");
+  });
+});

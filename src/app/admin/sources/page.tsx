@@ -5,6 +5,7 @@ import { toggleSourceActiveAction } from "@/app/admin/actions";
 import { formatDateTime } from "@/lib/utils";
 import { IngestButton } from "@/components/domain/IngestButton";
 import { ClearDemoDataButton } from "@/components/domain/ClearDemoDataButton";
+import { UploadQuotidienForm } from "@/components/domain/UploadQuotidienForm";
 
 export default async function AdminSourcesPage() {
   const sources = await prisma.source.findMany({ include: { _count: { select: { publications: true } } } });
@@ -12,6 +13,15 @@ export default async function AdminSourcesPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold text-ink">Sources</h1>
+      <Card>
+        <CardBody className="space-y-2">
+          <div>
+            <p className="text-sm font-medium text-ink">Import manuel d&apos;un quotidien (PDF)</p>
+            <p className="text-xs text-ink-muted">Dépose directement le PDF d&apos;un quotidien DGCMEF pour l&apos;extraire et alimenter la base, sans attendre le passage du robot ou en complément du site (ex. numéro déjà en main).</p>
+          </div>
+          <UploadQuotidienForm sources={sources.map((s) => ({ id: s.id, name: s.name }))} />
+        </CardBody>
+      </Card>
       <Card>
         <CardBody className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <div>

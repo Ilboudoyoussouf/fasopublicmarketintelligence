@@ -44,7 +44,23 @@ export type ExtractedNoticeCandidate = {
   confidence: number;
 };
 
-const NOTICE_BOUNDARY = /(AVIS\s+D[’']APPEL\s+D[’']OFFRES|DEMANDE\s+DE\s+PRIX|DEMANDE\s+DE\s+COTATION|MANIFESTATION\s+D[’']INT[ÉE]R[ÊE]T|DEMANDE\s+DE\s+PROPOSITIONS|R[ÉE]SULTAT\s+PROVISOIRE|AVIS\s+D[’']ATTRIBUTION|RECTIFICATIF|AVIS\s+D[’']ANNULATION)/gi;
+// Les en-têtes réels portent quasi systématiquement le préfixe "AVIS DE"/
+// "AVIS D'" (ex. "AVIS DE DEMANDE DE PRIX") : on fait démarrer le bloc au
+// début de ce préfixe quand il est présent (variantes ci-dessous listées
+// avant leur équivalent nu), sinon on retombe sur le mot-clé seul.
+// Volontairement SENSIBLE À LA CASSE (pas de flag "i") : le corps des avis
+// réutilise très souvent la même expression en minuscules dans une phrase
+// ("Cet avis de demande de prix fait suite à…", "la présente demande de
+// prix…") — confirmé sur le quotidien n°4486, où cela tronquait le bloc dès
+// la première ligne. Les en-têtes eux-mêmes sont systématiquement en
+// capitales, ce qui suffit à les distinguer sans perdre en robustesse.
+// "SYNTHESE DES RESULTATS DE LA DEMANDE DE PRIX N°..." : un tableau de
+// résultats cite le type de procédure d'origine dans son propre en-tête, ce
+// qui ferait sinon démarrer le bloc au mauvais endroit (sur "DEMANDE DE
+// PRIX", en aval de "SYNTHESE DES RESULTATS") — d'où cette alternative
+// placée avant, et le pluriel toléré sur "RESULTAT(S) PROVISOIRE(S)"
+// (confirmé sur le quotidien n°4486 : les deux formes existent).
+const NOTICE_BOUNDARY = /((?:FICHE\s+DE\s+)?SYNTHESE\s+DES\s+R[ÉE]SULTATS|R[ÉE]SULTATS?\s+PROVISOIRES?|AVIS\s+D[’']APPEL\s+D[’']OFFRES|AVIS\s+DE\s+DEMANDE\s+DE\s+PRIX|AVIS\s+DE\s+DEMANDE\s+DE\s+COTATION|AVIS\s+DE\s+MANIFESTATION\s+D[’']INT[ÉE]R[ÊE]T|AVIS\s+DE\s+DEMANDE\s+DE\s+PROPOSITIONS|DEMANDE\s+DE\s+PRIX|DEMANDE\s+DE\s+COTATION|MANIFESTATION\s+D[’']INT[ÉE]R[ÊE]T|DEMANDE\s+DE\s+PROPOSITIONS|AVIS\s+D[’']ATTRIBUTION|RECTIFICATIF|AVIS\s+D[’']ANNULATION)/g;
 
 const PROCEDURE_KEYWORDS: [RegExp, string][] = [
   [/appel\s+d[’']offres\s+ouvert\s+acc[ée]l[ée]r[ée]/i, "APPEL_OFFRES_OUVERT_ACCELERE"],
@@ -57,7 +73,8 @@ const PROCEDURE_KEYWORDS: [RegExp, string][] = [
 ];
 
 const PUBLICATION_KEYWORDS: [RegExp, string][] = [
-  [/r[ée]sultat\s+provisoire/i, "RESULTAT_PROVISOIRE"],
+  [/synthese\s+des\s+r[ée]sultats/i, "RESULTAT_PROVISOIRE"],
+  [/r[ée]sultats?\s+provisoires?/i, "RESULTAT_PROVISOIRE"],
   [/attribution/i, "ATTRIBUTION"],
   [/rectificatif/i, "RECTIFICATIF"],
   [/annulation/i, "ANNULATION"],
@@ -71,7 +88,15 @@ const PUBLICATION_KEYWORDS: [RegExp, string][] = [
 ];
 
 const REFERENCE_PATTERN = /n[°o]\s*([A-Z0-9][A-Z0-9./-]{3,30})/i;
-const AMOUNT_PATTERN = /(?:montant|estimation|budget)[^\d]{0,20}([\d\s.,]{5,20})\s*(?:f\s*cfa|fcfa|xof)/i;
+// Les quotidiens DGCMEF écrivent la plupart des montants en toutes lettres,
+// suivies de la valeur numérique entre parenthèses (ex. "dix-sept millions
+// ...(17 796 610) francs CFA en HTVA"), parfois avec un retour à la ligne
+// juste avant la parenthèse. On cherche donc en priorité la première valeur
+// parenthésée après "montant" (généralement le montant HTVA, cité avant le
+// TTC) ; le motif à chiffres directs reste un filet de sécurité pour les
+// avis plus courts qui écrivent le montant en chiffres uniquement.
+const AMOUNT_PAREN_PATTERN = /montant[^(]{0,200}\(([\d\s.,]{4,20})\)\s*(?:francs?\s*cfa|f\s*cfa|fcfa|xof)/i;
+const AMOUNT_DIRECT_PATTERN = /(?:montant|estimation|budget)[^\d]{0,20}([\d\s.,]{5,20})\s*(?:f\s*cfa|fcfa|xof)/i;
 const DATE_PATTERN = (label: RegExp) => new RegExp(`${label.source}[^\\d]{0,25}(\\d{1,2})[\\/.\\-](\\d{1,2})[\\/.\\-](\\d{4})`, "i");
 const DEADLINE_PATTERN = DATE_PATTERN(/(?:date\s+limite|au\s+plus\s+tard\s+le|d[ée]p[ôo]t\s+des\s+offres)/);
 const WITHDRAWAL_PATTERN = DATE_PATTERN(/retrait\s+(?:du|des)\s+dossiers?/);
@@ -82,6 +107,13 @@ const AUTHORITY_STOPWORD = /\s+(?:lance|sollicite|invite|recherche|informe|porte
 const AUTHORITY_PATTERN = /(minist[èe]re[^,.\n]{3,80}|commune\s+de\s+[a-zàâäéèêëîïôöùûüç\-\s]{2,40}|office\s+national[^,.\n]{3,80}|soci[ée]t[ée]\s+nationale[^,.\n]{3,80})/i;
 const LOT_LINE_PATTERN = /lot\s*n?[°o]?\s*(\d{1,3})\s*[:\-–]\s*([^\n]{5,150})/gi;
 const LOT_AMOUNT_PATTERN = /([\d\s.,]{4,20})\s*(?:f\s*cfa|fcfa|xof)/i;
+// Un même "Lot N :" apparaît souvent deux fois dans un avis : une fois dans
+// le paragraphe de montant prévisionnel ("Lot 1 : six millions ...(6 440
+// 678) francs CFA en HTVA...") et une fois dans la description réelle du
+// lot ("Lot 1 : Travaux de construction d'une salle de classe..."). On
+// écarte l'occurrence "montant" pour l'objet (mais on récupère son montant)
+// quand une occurrence plus descriptive existe pour le même numéro.
+const AMOUNT_WORD_START = /^(?:\d|une?|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt|trente|quarante|cinquante|soixante|cent|mille|millions?)\b/i;
 
 function cleanAuthority(raw: string): string {
   const stop = raw.search(AUTHORITY_STOPWORD);
@@ -100,13 +132,73 @@ function parseDateMatch(m: RegExpMatchArray | null): Date | null {
   return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
 }
 
+// Longueur maximale des champs texte libre (titre, autorité) — alignée sur
+// la colonne MySQL générée par Prisma pour un `String` sans type natif
+// explicite (VARCHAR(191)) afin qu'une extraction verbeuse ne fasse jamais
+// échouer la création du marché.
+const MAX_TITLE_LENGTH = 190;
+
 function guessTitle(block: string): string | null {
   // Le titre suit généralement le motif d'objet : "objet : ..." ou la
-  // première ligne significative après l'en-tête du type d'avis.
+  // première ligne significative après l'en-tête du type d'avis. Sert de
+  // filet de sécurité quand le préambule (voir extractPreambleTitleAuthority)
+  // n'a rien donné.
   const objetMatch = block.match(/objet\s*:?\s*([^\n]{10,200})/i);
-  if (objetMatch) return objetMatch[1].trim();
+  if (objetMatch) return objetMatch[1].trim().slice(0, MAX_TITLE_LENGTH);
   const firstLine = block.split("\n").map((l) => l.trim()).find((l) => l.length > 15 && !NOTICE_BOUNDARY.test(l));
-  return firstLine ?? null;
+  return firstLine ? firstLine.slice(0, MAX_TITLE_LENGTH) : null;
+}
+
+// Le texte réel des quotidiens DGCMEF place le titre du marché et l'autorité
+// contractante AVANT l'en-tête du type d'avis, jamais après un label
+// "Objet :" (vérifié sur le quotidien n°4486) :
+//   Fournitures et Services courants          <- catégorie (ignorée)
+//   MINISTERE DE L'AGRICULTURE, ...            <- autorité (tout en capitales)
+//   Acquisition de petits matériels agricoles  <- titre (peut s'étaler
+//   ... au profit du Projet ...                   sur plusieurs lignes)
+//   AVIS D'APPEL D'OFFRES OUVERT NATIONAL      <- en-tête (début du bloc)
+// On repère donc, dans les dernières lignes du texte qui précède l'en-tête,
+// la dernière ligne "tout en capitales" (l'autorité), puis on prend tout ce
+// qui suit comme titre.
+const NOISE_PREAMBLE_LINE = /^(n[°o]\s*\d|www\.|\d{1,4}$)/i;
+
+function isMostlyUppercase(line: string): boolean {
+  const letters = line.replace(/[^A-Za-zÀ-ÖØ-öø-ÿ]/g, "");
+  if (letters.length < 6) return false;
+  const upper = letters.replace(/[^A-ZÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ]/g, "");
+  return upper.length / letters.length > 0.85;
+}
+
+function extractPreambleTitleAuthority(precedingText: string): { title: string | null; authority: string | null } {
+  const window = precedingText.length > 3000 ? precedingText.slice(-3000) : precedingText;
+  const lines = window
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((l) => !NOISE_PREAMBLE_LINE.test(l));
+  const tail = lines.slice(-25);
+
+  let authorityIdx = -1;
+  for (let i = tail.length - 1; i >= 0; i--) {
+    if (isMostlyUppercase(tail[i]) && tail[i].length >= 8) {
+      authorityIdx = i;
+      break;
+    }
+  }
+  if (authorityIdx === -1) return { title: null, authority: null };
+
+  const authority = tail[authorityIdx];
+  const titleLines = tail.slice(authorityIdx + 1);
+  // Filet de sécurité : si l'en-tête n'a pas été reconnu avec son préfixe
+  // "AVIS DE"/"AVIS D'" (variante non couverte par NOTICE_BOUNDARY), ce
+  // résidu se retrouve en fin de titre — on le retire.
+  const title = titleLines
+    .join(" ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+AVIS(?:\s+DE|\s+D[’'])?\s*$/i, "")
+    .trim()
+    .slice(0, MAX_TITLE_LENGTH);
+  return { title: title.length > 8 ? title : null, authority: authority.slice(0, MAX_TITLE_LENGTH) };
 }
 
 // Section "Exigences / critères de qualification" — le dictionnaire couvre
@@ -126,7 +218,7 @@ const REQUIREMENT_PATTERNS: { type: string; pattern: RegExp; unit?: string }[] =
   { type: "EQUIPEMENTS", pattern: /(?:mat[ée]riel|[ée]quipements?)\s+(?:roulant|minimum|requis)[^\n.]{0,120}/i },
   { type: "GARANTIES", pattern: /garantie\s+de\s+soumission[^\n.]{0,120}/i },
   { type: "CRITERE_ENVIRONNEMENTAL", pattern: /(?:crit[èe]re|plan)\s+(?:environnemental|de\s+gestion\s+environnementale)[^\n.]{0,150}/i },
-  { type: "CONDITIONS_RESERVATION", pattern: /r[ée]serv[ée]\s+(?:aux?\s+)?(?:pme|femmes|jeunes|entreprises?\s+communautaires?|entreprises?\s+burkinab[ée])[^\n.]{0,100}/i },
+  { type: "CONDITIONS_RESERVATION", pattern: /r[ée]serv[ée]e?\s*:?\s*(?:aux?\s+)?(?:pme|micro(?:s)?\s+et\s+petites?\s+entreprises?|petites?\s+et\s+moyennes?\s+entreprises?|femmes|jeunes|entreprises?\s+communautaires?|entreprises?\s+burkinab[ée])[^\n.]{0,100}/i },
 ];
 
 function extractRequirements(block: string): RequirementCandidate[] {
@@ -191,39 +283,71 @@ function extractRequiredDocuments(block: string): RequiredDocCandidate[] {
 }
 
 function extractLots(block: string): LotCandidate[] {
-  const lots: LotCandidate[] = [];
-  const seen = new Set<string>();
+  const byNumero = new Map<string, LotCandidate>();
   // Une ligne à la fois : évite qu'un montant appartenant au lot suivant
   // ne "fuite" dans le lot courant (la capture d'objet est gourmande par
   // construction, donc on la contient strictement à la ligne du match).
   for (const m of block.matchAll(LOT_LINE_PATTERN)) {
     const numero = m[1];
-    if (seen.has(numero)) continue;
-    seen.add(numero);
     const line = m[2].trim();
     const amountMatch = line.match(LOT_AMOUNT_PATTERN);
-    const objet = amountMatch ? line.slice(0, amountMatch.index).replace(/[—\-–:]\s*$/, "").trim() : line;
-    lots.push({ numero, objet: objet.slice(0, 150), montant: amountMatch ? parseAmount(amountMatch[1]) : null });
+    const objet = (amountMatch ? line.slice(0, amountMatch.index).replace(/[—\-–:]\s*$/, "").trim() : line).slice(0, 150);
+    const montant = amountMatch ? parseAmount(amountMatch[1]) : null;
+    const isAmountish = objet.length < 5 || AMOUNT_WORD_START.test(objet);
+
+    const existing = byNumero.get(numero);
+    if (!existing) {
+      byNumero.set(numero, { numero, objet, montant });
+      continue;
+    }
+    const existingIsAmountish = existing.objet.length < 5 || AMOUNT_WORD_START.test(existing.objet);
+    if (existingIsAmountish && !isAmountish) {
+      byNumero.set(numero, { numero, objet, montant: montant ?? existing.montant });
+    } else if (!existingIsAmountish && existing.montant == null && montant != null) {
+      existing.montant = montant;
+    }
   }
-  return lots;
+  return [...byNumero.values()];
 }
 
+// Distance minimale (caractères) entre deux frontières pour qu'elles soient
+// traitées comme deux avis distincts. En dessous, on considère qu'il s'agit
+// du même en-tête citant deux mots-clés proches (ex. "SYNTHESE DES
+// RESULTATS DE LA DEMANDE DE PRIX N°…" : un tableau de résultats cite le
+// type de procédure d'origine à quelques mots de son propre en-tête) — sans
+// ce filtre, un seul avis se scindait en deux blocs parasites, dont un
+// second à tort classé comme un nouvel appel (confirmé sur le quotidien
+// n°4486).
+const MIN_BOUNDARY_GAP = 60;
+
 export function segmentAndClassify(fullText: string): ExtractedNoticeCandidate[] {
-  const indices: number[] = [];
+  const rawIndices: number[] = [];
   const matches = [...fullText.matchAll(NOTICE_BOUNDARY)];
-  for (const m of matches) if (m.index !== undefined) indices.push(m.index);
-  if (indices.length === 0) return [];
+  for (const m of matches) if (m.index !== undefined) rawIndices.push(m.index);
+  if (rawIndices.length === 0) return [];
+
+  const indices = rawIndices.filter((idx, i) => i === 0 || idx - rawIndices[i - 1] >= MIN_BOUNDARY_GAP);
 
   const blocks = indices.map((start, i) => fullText.slice(start, indices[i + 1] ?? fullText.length));
 
-  return blocks.map((block) => {
-    const procedureEntry = PROCEDURE_KEYWORDS.find(([re]) => re.test(block));
-    const publicationEntry = PUBLICATION_KEYWORDS.find(([re]) => re.test(block));
+  return blocks.map((block, i) => {
+    // Le type d'avis/de procédure se détermine dans la zone d'en-tête (nom
+    // du type d'avis + référence), jamais dans le corps entier : un avis
+    // d'appel d'offres classique mentionne presque toujours, bien plus loin
+    // dans le texte, la « commission d'attribution des marchés » (organe
+    // d'évaluation, boilerplate quasi systématique) — la chercher sur tout
+    // le bloc reclasserait à tort ces avis en résultat d'attribution
+    // (confirmé sur le quotidien n°4486).
+    const headerWindow = block.slice(0, 220);
+    const procedureEntry = PROCEDURE_KEYWORDS.find(([re]) => re.test(headerWindow));
+    const publicationEntry = PUBLICATION_KEYWORDS.find(([re]) => re.test(headerWindow));
     const reference = block.match(REFERENCE_PATTERN)?.[1] ?? null;
-    const amountMatch = block.match(AMOUNT_PATTERN);
+    const amountMatch = block.match(AMOUNT_PAREN_PATTERN) ?? block.match(AMOUNT_DIRECT_PATTERN);
     const deadlineMatch = block.match(DEADLINE_PATTERN);
     const authorityMatch = block.match(AUTHORITY_PATTERN);
     const region = REGION_KEYWORDS.find((r) => block.includes(r)) ?? null;
+    const precedingText = i === 0 ? fullText.slice(0, indices[0]) : blocks[i - 1];
+    const preamble = extractPreambleTitleAuthority(precedingText);
 
     const withdrawalDeadline = parseDateMatch(block.match(WITHDRAWAL_PATTERN));
     const openingAt = parseDateMatch(block.match(OPENING_PATTERN));
@@ -238,7 +362,7 @@ export function segmentAndClassify(fullText: string): ExtractedNoticeCandidate[]
     if (reference) fieldsFound++;
     if (amountMatch) fieldsFound++;
     if (deadlineMatch) fieldsFound++;
-    if (authorityMatch) fieldsFound++;
+    if (preamble.authority || authorityMatch) fieldsFound++;
     if (procedureEntry) fieldsFound++;
     if (requirements.length > 0) fieldsFound++;
     if (requiredDocuments.length > 0) fieldsFound++;
@@ -249,8 +373,8 @@ export function segmentAndClassify(fullText: string): ExtractedNoticeCandidate[]
       publicationTypeGuess: publicationEntry?.[1] ?? "AVIS_APPEL_OFFRES",
       procedureTypeGuess: procedureEntry?.[1] ?? null,
       reference,
-      title: guessTitle(block),
-      authorityGuess: authorityMatch?.[1] ? cleanAuthority(authorityMatch[1]) : null,
+      title: preamble.title ?? guessTitle(block),
+      authorityGuess: preamble.authority ? cleanAuthority(preamble.authority) : authorityMatch?.[1] ? cleanAuthority(authorityMatch[1]) : null,
       amountExclTax: amountMatch ? parseAmount(amountMatch[1]) : null,
       submissionDeadline: parseDateMatch(deadlineMatch),
       withdrawalDeadline,

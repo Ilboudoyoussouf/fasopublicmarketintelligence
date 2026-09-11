@@ -11,12 +11,45 @@ import { findMatchingMarket, registerBlockOrDetectDuplicate } from "@/lib/ingest
 import {
   ExtractionJobStage, ExtractionJobStatus, DataQualityStatus,
   PublicationKind, MarketStatus, ProcedureType, PublicationType,
-  RequirementType, RequiredDocType,
+  RequirementType, RequiredDocType, OrganizationType,
 } from "@prisma/client";
 
 function getConnectorFor(sourceName: string, baseUrl: string): SourceConnector {
   if (sourceName.toUpperCase() === "DGCMEF") return createDgcmefConnector(baseUrl);
   throw new Error(`Aucun connecteur enregistré pour la source « ${sourceName} ».`);
+}
+
+const AUTHORITY_TYPE_RULES: [RegExp, OrganizationType][] = [
+  [/^minist[èe]re/i, OrganizationType.MINISTERE],
+  [/^commune\s+(?:de|d[’'])/i, OrganizationType.COMMUNE],
+  [/^r[ée]gion/i, OrganizationType.REGION],
+  [/^province/i, OrganizationType.PROVINCE],
+  [/projet/i, OrganizationType.PROJET],
+];
+
+function guessAuthorityType(name: string): OrganizationType {
+  for (const [re, type] of AUTHORITY_TYPE_RULES) if (re.test(name)) return type;
+  return OrganizationType.AUTRE;
+}
+
+// Le référentiel d'autorités contractantes (section 3, taxonomie) n'est pas
+// exhaustif par construction — des centaines d'organismes publient au
+// Burkina Faso. Plutôt que d'abandonner silencieusement un marché faute
+// d'autorité déjà connue (perte de donnée réelle contraire à la section 94),
+// on la crée à la volée à partir du nom extrait tel qu'il apparaît dans le
+// quotidien (verbatim, pas de reformatage qui introduirait une supposition).
+async function resolveOrCreateAuthority(authorityGuess: string) {
+  const name = authorityGuess.slice(0, 190); // VARCHAR(191)
+  const existing = await prisma.contractingAuthority.findFirst({ where: { name: { contains: authorityGuess.slice(0, 30) } } });
+  if (existing) return existing;
+
+  const country = await prisma.country.findFirstOrThrow();
+  try {
+    return await prisma.contractingAuthority.create({ data: { countryId: country.id, name, type: guessAuthorityType(name) } });
+  } catch {
+    // Conflit d'unicité (countryId, name) : une création concurrente a eu lieu entre-temps.
+    return prisma.contractingAuthority.findFirst({ where: { countryId: country.id, name } });
+  }
 }
 
 async function runJob(documentId: string, stage: ExtractionJobStage, fn: () => Promise<void>) {
@@ -76,6 +109,19 @@ export async function discoverSource(sourceId: string) {
   return { publicationsScanned: discovered.length, newDocuments: createdDocumentIds.length, documentIds: createdDocumentIds };
 }
 
+// Un résultat provisoire, une attribution, un rectificatif, une annulation,
+// une reprise, un réexamen ou une décision de recours ne sont jamais un
+// nouvel appel à la concurrence : ce sont des mises à jour d'un marché déjà
+// publié (souvent un tableau de résultats, pas un avis). Sans marché
+// existant auquel les rattacher (cas fréquent : le marché d'origine a été
+// publié dans un quotidien antérieur à ceux déjà ingérés), il ne faut
+// jamais en fabriquer un nouveau — cela créerait une fausse opportunité à
+// partir d'un contenu qui n'en est pas une.
+const FRESH_CALL_TYPES = new Set<string>([
+  "AVIS_APPEL_OFFRES", "DEMANDE_PRIX", "DEMANDE_COTATION", "APPEL_OFFRES_OUVERT",
+  "APPEL_OFFRES_ACCELERE", "MANIFESTATION_INTERET", "DEMANDE_PROPOSITIONS",
+]);
+
 const PROCEDURE_MAP: Record<string, ProcedureType> = {
   APPEL_OFFRES_OUVERT: ProcedureType.APPEL_OFFRES_OUVERT,
   APPEL_OFFRES_OUVERT_ACCELERE: ProcedureType.APPEL_OFFRES_OUVERT_ACCELERE,
@@ -102,6 +148,18 @@ export async function processDocument(documentId: string) {
     // Le document reste PENDING pour une reprise ultérieure — aucune perte silencieuse (section 94).
     return { status: "download_failed" as const };
   }
+
+  return processDocumentBuffer(documentId, buffer!);
+}
+
+// Étapes communes à un document déjà téléchargé (via un connecteur, section
+// 40, ou via un dépôt manuel, section « import manuel ») : extraction du
+// texte → segmentation/classification → structuration → validation. Séparée
+// de processDocument() pour être réutilisable par ingestUploadedPdf() sans
+// dupliquer la logique de création des marchés (section 94 : jamais deux
+// chemins de vérité pour la même donnée).
+async function processDocumentBuffer(documentId: string, buffer: Buffer) {
+  const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, include: { publication: true } });
 
   let fullText = "";
   await runJob(documentId, ExtractionJobStage.PARSE, async () => {
@@ -132,6 +190,7 @@ export async function processDocument(documentId: string) {
   let createdMarkets = 0;
   let updatedMarkets = 0;
   let republishedBlocks = 0;
+  let skippedUnmatchedUpdates = 0;
 
   await runJob(documentId, ExtractionJobStage.EXTRACT, async () => {
     for (const candidate of candidates) {
@@ -147,9 +206,6 @@ export async function processDocument(documentId: string) {
       }
 
       const existingMarket = await findMatchingMarket(candidate);
-      const authority = candidate.authorityGuess
-        ? await prisma.contractingAuthority.findFirst({ where: { name: { contains: candidate.authorityGuess.slice(0, 30) } } })
-        : null;
 
       if (existingMarket) {
         await prisma.marketEvent.create({
@@ -159,7 +215,13 @@ export async function processDocument(documentId: string) {
         continue;
       }
 
-      if (!authority) continue; // sans organisme résolu, la donnée part en file de validation plutôt que de créer un enregistrement incomplet
+      if (!FRESH_CALL_TYPES.has(candidate.publicationTypeGuess)) {
+        skippedUnmatchedUpdates++;
+        continue;
+      }
+
+      const authority = candidate.authorityGuess ? await resolveOrCreateAuthority(candidate.authorityGuess) : null;
+      if (!authority) continue; // aucune autorité n'a pu être devinée dans le texte (préambule absent) — pas de marché incomplet créé
 
       const market = await prisma.market.create({
         data: {
@@ -254,7 +316,7 @@ export async function processDocument(documentId: string) {
     console.log(`[ingestion] ${republishedBlocks} bloc(s) republié(s) détecté(s) et ignoré(s) dans ${document.filename} (déduplication par hash).`);
   }
 
-  return { status: "ok" as const, candidatesFound: candidates.length, createdMarkets, updatedMarkets, republishedBlocks };
+  return { status: "ok" as const, candidatesFound: candidates.length, createdMarkets, updatedMarkets, republishedBlocks, skippedUnmatchedUpdates };
 }
 
 export async function runFullIngestion(sourceId: string) {
@@ -280,4 +342,57 @@ export async function runFullIngestion(sourceId: string) {
     results.push({ documentId: id, ...(await processDocument(id)) });
   }
   return { ...discoverStats, retriedStalled: stalled.length, results };
+}
+
+/**
+ * Dépôt manuel d'un quotidien PDF (section « import manuel ») : contourne le
+ * téléchargement réseau (indisponible en sandbox, ou en attendant que le
+ * connecteur DGCMEF soit confirmé fiable sur le site réel) en réutilisant
+ * exactement le même passage extraction → classification → structuration →
+ * validation que le robot automatique — aucune donnée créée par cette voie
+ * n'est distinguable, dans le schéma, d'une donnée ingérée automatiquement.
+ */
+export async function ingestUploadedPdf(params: {
+  sourceId: string;
+  filename: string;
+  buffer: Buffer;
+  publicationNumero: string;
+  publishedAt: Date;
+}) {
+  const { sourceId, filename, buffer, publicationNumero, publishedAt } = params;
+
+  const publication = await prisma.publication.upsert({
+    where: { sourceId_numero_kind: { sourceId, numero: publicationNumero, kind: PublicationKind.QUOTIDIEN_MARCHES } },
+    update: {},
+    create: {
+      sourceId,
+      kind: PublicationKind.QUOTIDIEN_MARCHES,
+      numero: publicationNumero,
+      isDoubleIssue: false,
+      publishedAt,
+      title: `Quotidien n°${publicationNumero}`,
+    },
+  });
+
+  const document = await prisma.document.create({
+    data: {
+      publicationId: publication.id,
+      filename,
+      url: `manual-upload://${publication.id}/${Date.now()}-${filename}`,
+      isPrincipal: true,
+      isBis: false,
+      extractionStatus: "PENDING",
+    },
+  });
+
+  await runJob(document.id, ExtractionJobStage.DOWNLOAD, async () => {
+    const stored = await getRawStorage().save(filename, buffer);
+    await prisma.document.update({
+      where: { id: document.id },
+      data: { fileHash: stored.hash, sizeBytes: stored.sizeBytes, downloadedAt: new Date(), extractionStatus: "DOWNLOADED" },
+    });
+  });
+
+  const result = await processDocumentBuffer(document.id, buffer);
+  return { documentId: document.id, publicationId: publication.id, ...result };
 }

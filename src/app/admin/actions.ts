@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requirePlatformAdmin } from "@/lib/session";
 import { revalidatePath } from "next/cache";
 import { DataQualityStatus } from "@prisma/client";
-import { runFullIngestion } from "@/lib/ingestion/pipeline";
+import { runFullIngestion, ingestUploadedPdf } from "@/lib/ingestion/pipeline";
 import { clearDemoMarkets } from "@/lib/admin/clear-demo-data";
 
 export async function clearDemoDataAction() {
@@ -31,6 +31,40 @@ export async function triggerIngestionAction(sourceId: string) {
     revalidatePath("/admin/importations");
     revalidatePath("/admin/jobs");
     revalidatePath("/admin/sources");
+    return { ok: true as const, ...result };
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function uploadQuotidienAction(formData: FormData) {
+  await requirePlatformAdmin();
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return { ok: false as const, error: "Aucun fichier PDF reçu." };
+  }
+  const sourceId = String(formData.get("sourceId") ?? "").trim();
+  const numero = String(formData.get("numero") ?? "").trim();
+  const publishedAtRaw = String(formData.get("publishedAt") ?? "").trim();
+  if (!sourceId || !numero || !publishedAtRaw) {
+    return { ok: false as const, error: "Source, numéro et date de publication sont requis." };
+  }
+  const publishedAt = new Date(publishedAtRaw);
+  if (Number.isNaN(publishedAt.getTime())) {
+    return { ok: false as const, error: "Date de publication invalide." };
+  }
+
+  try {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const result = await ingestUploadedPdf({ sourceId, filename: file.name, buffer, publicationNumero: numero, publishedAt });
+    revalidatePath("/marches");
+    revalidatePath("/dashboard");
+    revalidatePath("/opportunites");
+    revalidatePath("/admin/sources");
+    revalidatePath("/admin/importations");
+    revalidatePath("/admin/jobs");
+    revalidatePath("/admin/validation");
     return { ok: true as const, ...result };
   } catch (err) {
     return { ok: false as const, error: err instanceof Error ? err.message : String(err) };

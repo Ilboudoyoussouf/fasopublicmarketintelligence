@@ -23,7 +23,11 @@ export async function extractPdfText(buffer: Buffer): Promise<ExtractionResult> 
       return runOcrFallback(buffer);
     }
     return { pages, method: "pdf-text" };
-  } catch {
+  } catch (err) {
+    // Jamais de perte silencieuse (section 94) : un échec d'extraction texte
+    // doit être visible dans les logs serveur, pas seulement se traduire en
+    // repli OCR indisponible côté appelant.
+    console.error("[extractPdfText] échec de l'extraction texte, repli OCR :", err);
     return runOcrFallback(buffer);
   }
 }
