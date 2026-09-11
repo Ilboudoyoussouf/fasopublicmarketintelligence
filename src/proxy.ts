@@ -9,6 +9,7 @@ const PUBLIC_PATHS = [
   "/conditions-utilisation",
   "/confidentialite",
   "/verification-email",
+  "/aide",
 ];
 
 export default auth((req) => {

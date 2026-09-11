@@ -41,8 +41,8 @@ export async function getDashboardData(tenantId: string) {
     prisma.result.count({ where: { resultAt: { gte: ago14d } } }),
     prisma.ppmItem.count({ where: { status: "PLANIFIE" } }),
     prisma.alert.count({ where: { tenantId, priority: "CRITIQUE", readAt: null } }),
-    prisma.score.findMany({ where: { tenantId, global: { gte: 50 } }, include: { market: true } }),
-    prisma.score.findMany({ where: { tenantId, global: { gte: 50 }, market: { publishedAt: { gte: ago60d, lt: ago30d } } }, include: { market: true } }),
+    prisma.score.findMany({ where: { tenantId, global: { gte: 50 } } }),
+    prisma.score.findMany({ where: { tenantId, global: { gte: 50 }, market: { publishedAt: { gte: ago60d, lt: ago30d } } } }),
     prisma.market.findMany({ where: { publishedAt: { gte: ago7d } }, select: { publishedAt: true } }),
     prisma.recommendation.findMany({
       where: { tenantId },
@@ -57,8 +57,16 @@ export async function getDashboardData(tenantId: string) {
     prisma.alert.findMany({ where: { tenantId }, orderBy: { createdAt: "desc" }, take: 6 }),
   ]);
 
-  const totalValue = matchedScores.reduce((sum, s) => sum + Number(s.market.amountEstimatedExclTax ?? 0), 0);
-  const totalValuePrev30d = matchedValuePrev30d.reduce((sum, s) => sum + Number(s.market.amountEstimatedExclTax ?? 0), 0);
+  // Score.market est une relation obligatoire côté schéma, mais l'absence de cascade de
+  // suppression peut laisser des lignes orphelines (marketId pointant vers un marché déjà
+  // supprimé) — on résout donc les marchés séparément plutôt que via `include`, qui lèverait
+  // une erreur Prisma sur la moindre ligne orpheline.
+  const scoreMarketIds = [...new Set([...matchedScores.map((s) => s.marketId), ...matchedValuePrev30d.map((s) => s.marketId)])];
+  const scoreMarkets = await prisma.market.findMany({ where: { id: { in: scoreMarketIds } }, select: { id: true, amountEstimatedExclTax: true } });
+  const scoreMarketById = new Map(scoreMarkets.map((m) => [m.id, m]));
+
+  const totalValue = matchedScores.reduce((sum, s) => sum + Number(scoreMarketById.get(s.marketId)?.amountEstimatedExclTax ?? 0), 0);
+  const totalValuePrev30d = matchedValuePrev30d.reduce((sum, s) => sum + Number(scoreMarketById.get(s.marketId)?.amountEstimatedExclTax ?? 0), 0);
 
   // Sparkline 7 jours — nombre d'opportunités publiées par jour (§10).
   const dailyBuckets = new Map<string, number>();
@@ -89,13 +97,18 @@ export async function getDashboardData(tenantId: string) {
   const companies = await prisma.company.findMany({ where: { id: { in: companyIds } } });
   const companyById = new Map(companies.map((c) => [c.id, c]));
 
-  // Timeline d'échéances (marchés pertinents à venir sous 14 jours)
-  const upcomingDeadlines = await prisma.score.findMany({
+  // Timeline d'échéances (marchés pertinents à venir sous 14 jours) — même précaution que
+  // ci-dessus vis-à-vis des lignes Score orphelines.
+  const upcomingDeadlineScores = await prisma.score.findMany({
     where: { tenantId, global: { gte: 40 }, market: { submissionDeadline: { gte: now } } },
     orderBy: { market: { submissionDeadline: "asc" } },
     take: 6,
-    include: { market: true },
   });
+  const upcomingMarkets = await prisma.market.findMany({ where: { id: { in: upcomingDeadlineScores.map((s) => s.marketId) } } });
+  const upcomingMarketById = new Map(upcomingMarkets.map((m) => [m.id, m]));
+  const upcomingDeadlines = upcomingDeadlineScores
+    .map((s) => ({ ...s, market: upcomingMarketById.get(s.marketId) }))
+    .filter((s): s is typeof s & { market: NonNullable<typeof s.market> } => Boolean(s.market));
 
   return {
     kpis: {

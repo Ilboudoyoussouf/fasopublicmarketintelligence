@@ -17,6 +17,7 @@ const DIMENSIONS = [
   { slug: "causes-echec", label: "Causes d'échec", desc: "Motifs de rejet les plus fréquents." },
   { slug: "financements", label: "Financements", desc: "Répartition par source de financement." },
   { slug: "temporelle", label: "Temporelle", desc: "Évolution mensuelle de l'activité." },
+  { slug: "tendances", label: "Tendances & prévisions", desc: "Projection de l'activité à court terme." },
 ];
 
 export default async function AnalysesPage() {
