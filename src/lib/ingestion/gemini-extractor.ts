@@ -190,6 +190,19 @@ export type GeminiNotice = z.infer<typeof noticeSchema>;
 
 const responseSchema = z.object({ notices: z.array(noticeSchema).max(300).default([]) });
 
+/**
+ * Revalide un tableau d'avis Gemini déjà extraits — utilisé quand des avis
+ * font un aller-retour par le client (écran d'aperçu avant ajout en base,
+ * section admin/sources) : le client ne fournit que des données déjà
+ * produites par cette même extraction, mais on ne fait jamais confiance
+ * aveuglément à une valeur qui a transité côté client avant d'écrire en
+ * base — mêmes garanties (troncature, repli d'enum) qu'à l'extraction
+ * initiale.
+ */
+export function reviseNotices(notices: unknown[]): GeminiNotice[] {
+  return notices.map((n) => noticeSchema.parse(n));
+}
+
 const EXTRACTION_PROMPT = `Tu es un extracteur de données structurées pour les quotidiens des marchés publics du Burkina Faso, publiés par la DGCMEF (Direction Générale du Contrôle des Marchés publics et des Engagements Financiers).
 
 ÉTAPE 1 (impérative) : parcours le document PAGE PAR PAGE, du début à la fin. Un quotidien contient généralement entre 10 et 70 avis distincts répartis sur toutes les pages. N'ARRÊTE JAMAIS après avoir trouvé le premier avis — continue systématiquement jusqu'à la dernière page. Ignore uniquement les pages de sommaire/couverture pures sans contenu de marché.

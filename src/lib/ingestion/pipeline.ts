@@ -7,7 +7,7 @@ import type { SourceConnector } from "@/lib/ingestion/connector";
 import { getRawStorage } from "@/lib/ingestion/storage";
 import { extractPdfText } from "@/lib/ingestion/extract-text";
 import { segmentAndClassify } from "@/lib/ingestion/parser";
-import { extractNoticesWithGemini, isGeminiConfigured, type GeminiNotice } from "@/lib/ingestion/gemini-extractor";
+import { extractNoticesWithGemini, isGeminiConfigured, reviseNotices, type GeminiNotice } from "@/lib/ingestion/gemini-extractor";
 import { findMatchingMarket, registerBlockOrDetectDuplicate, jaccardSimilarity } from "@/lib/ingestion/dedupe";
 import {
   ExtractionJobStage, ExtractionJobStatus, DataQualityStatus,
@@ -753,4 +753,80 @@ export async function ingestUploadedPdf(params: {
 
   const result = await processDocumentBuffer(document.id, buffer);
   return { documentId: document.id, publicationId: publication.id, ...result };
+}
+
+// ---------------------------------------------------------------------
+// Workflow « analyser puis valider » (section admin/sources) : contrairement
+// à runFullIngestion/ingestUploadedPdf qui écrivent les marchés
+// immédiatement, ce parcours en deux temps télécharge et extrait avec
+// Gemini SANS rien créer en base, pour un aperçu humain avant ajout — la
+// création effective passe par commitAnalyzedDocument(), qui réutilise
+// exactement la même fonction d'écriture (processGeminiNotices) que le
+// robot automatique : aucune divergence possible entre les deux chemins.
+// ---------------------------------------------------------------------
+
+export type DocumentAnalysis =
+  | { status: "ok"; notices: GeminiNotice[] }
+  | { status: "gemini_not_configured" }
+  | { status: "download_failed" }
+  | { status: "extraction_failed"; error: string };
+
+/** Télécharge un document déjà découvert et l'analyse avec Gemini, sans créer aucun marché. */
+export async function analyzeDocument(documentId: string): Promise<DocumentAnalysis> {
+  const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, include: { publication: { include: { source: true } } } });
+  const connector = getConnectorFor(document.publication.source.name, document.publication.source.baseUrl);
+
+  let buffer: Buffer;
+  try {
+    buffer = await runJob(documentId, ExtractionJobStage.DOWNLOAD, async () => {
+      const downloaded = await connector.download({ filename: document.filename, url: document.url, isPrincipal: document.isPrincipal, isBis: document.isBis });
+      const stored = await getRawStorage().save(document.filename, downloaded);
+      await prisma.document.update({ where: { id: documentId }, data: { fileHash: stored.hash, sizeBytes: stored.sizeBytes, downloadedAt: new Date(), extractionStatus: "DOWNLOADED" } });
+      return downloaded;
+    });
+  } catch {
+    // Le document reste PENDING pour une reprise ultérieure — aucune perte silencieuse (section 94).
+    return { status: "download_failed" };
+  }
+
+  if (!isGeminiConfigured()) return { status: "gemini_not_configured" };
+
+  try {
+    const notices = await runJob(documentId, ExtractionJobStage.CLASSIFY, async () => {
+      const result = await extractNoticesWithGemini(buffer);
+      await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "CLASSIFIED" } });
+      return result;
+    });
+    return { status: "ok", notices };
+  } catch (err) {
+    await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "FAILED" } });
+    return { status: "extraction_failed", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Découvre les nouveaux documents d'une source puis les analyse avec Gemini (sans écrire de marché). */
+export async function discoverAndAnalyzeSource(sourceId: string) {
+  const { documentIds, ...discoverStats } = await discoverSource(sourceId);
+
+  const analyses: (DocumentAnalysis & { documentId: string; filename: string; publicationNumero: string; publishedAt: Date })[] = [];
+  for (const documentId of documentIds) {
+    const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, include: { publication: true } });
+    const analysis = await analyzeDocument(documentId);
+    analyses.push({ documentId, filename: document.filename, publicationNumero: document.publication.numero, publishedAt: document.publication.publishedAt, ...analysis });
+  }
+  return { ...discoverStats, analyses };
+}
+
+/** Valide un aperçu (éventuellement filtré côté client) et crée les marchés correspondants. */
+export async function commitAnalyzedDocument(documentId: string, notices: unknown[]) {
+  const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, include: { publication: true } });
+  const revised = reviseNotices(notices);
+
+  const result = await runJob(documentId, ExtractionJobStage.EXTRACT, () => processGeminiNotices(revised, document, documentId));
+  await runJob(documentId, ExtractionJobStage.VALIDATE, async () => {
+    const lowConfidence = revised.some((n) => n.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD);
+    await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: lowConfidence ? "EXTRACTED" : "VALIDATED" } });
+  });
+
+  return { status: "ok" as const, candidatesFound: revised.length, ...result };
 }

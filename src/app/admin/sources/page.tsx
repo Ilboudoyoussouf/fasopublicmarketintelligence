@@ -6,6 +6,7 @@ import { formatDateTime } from "@/lib/utils";
 import { IngestButton } from "@/components/domain/IngestButton";
 import { ClearDemoDataButton } from "@/components/domain/ClearDemoDataButton";
 import { UploadQuotidienForm } from "@/components/domain/UploadQuotidienForm";
+import { SourceAnalysisPanel } from "@/components/domain/SourceAnalysisPanel";
 
 export default async function AdminSourcesPage() {
   const sources = await prisma.source.findMany({ include: { _count: { select: { publications: true } } } });
@@ -33,7 +34,7 @@ export default async function AdminSourcesPage() {
       </Card>
       <div className="space-y-2">
         {sources.map((s) => (
-          <Card key={s.id}><CardBody>
+          <Card key={s.id}><CardBody className="space-y-3">
             <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-ink">{s.name}</p>
@@ -46,6 +47,11 @@ export default async function AdminSourcesPage() {
                 </form>
                 <IngestButton sourceId={s.id} />
               </div>
+            </div>
+            <div className="border-t border-line pt-3">
+              <p className="mb-1.5 text-xs font-medium text-ink">Analyser avec aperçu avant ajout</p>
+              <p className="mb-2 text-[11px] text-ink-muted">Télécharge les nouveaux quotidiens de cette source, les extrait avec Gemini, puis affiche un aperçu des marchés détectés — rien n&apos;est ajouté à la base tant que vous ne le validez pas explicitement.</p>
+              <SourceAnalysisPanel sourceId={s.id} />
             </div>
           </CardBody></Card>
         ))}

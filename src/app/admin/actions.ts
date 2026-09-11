@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requirePlatformAdmin } from "@/lib/session";
 import { revalidatePath } from "next/cache";
 import { DataQualityStatus } from "@prisma/client";
-import { runFullIngestion, ingestUploadedPdf } from "@/lib/ingestion/pipeline";
+import { runFullIngestion, ingestUploadedPdf, discoverAndAnalyzeSource, commitAnalyzedDocument } from "@/lib/ingestion/pipeline";
 import { clearDemoMarkets } from "@/lib/admin/clear-demo-data";
 
 export async function clearDemoDataAction() {
@@ -58,6 +58,43 @@ export async function uploadQuotidienAction(formData: FormData) {
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
     const result = await ingestUploadedPdf({ sourceId, filename: file.name, buffer, publicationNumero: numero, publishedAt });
+    revalidatePath("/marches");
+    revalidatePath("/dashboard");
+    revalidatePath("/opportunites");
+    revalidatePath("/admin/sources");
+    revalidatePath("/admin/importations");
+    revalidatePath("/admin/jobs");
+    revalidatePath("/admin/validation");
+    return { ok: true as const, ...result };
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Téléchargement automatique + extraction Gemini SANS écriture en base —
+// l'aperçu (section admin/sources) laisse un humain valider avant que quoi
+// que ce soit ne soit ajouté à la plateforme.
+export async function analyzeSourceAction(sourceId: string) {
+  await requirePlatformAdmin();
+  try {
+    const result = await discoverAndAnalyzeSource(sourceId);
+    revalidatePath("/admin/sources");
+    revalidatePath("/admin/importations");
+    revalidatePath("/admin/jobs");
+    return { ok: true as const, ...result };
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Ajoute à la base les marchés d'un aperçu déjà validé par un humain —
+// `notices` provient de analyzeSourceAction, éventuellement filtré côté
+// client (décoché certains avis) ; revalidé server-side avant écriture
+// (reviseNotices, dans pipeline.ts) quoi qu'il en soit.
+export async function commitAnalyzedDocumentAction(documentId: string, notices: unknown[]) {
+  await requirePlatformAdmin();
+  try {
+    const result = await commitAnalyzedDocument(documentId, notices);
     revalidatePath("/marches");
     revalidatePath("/dashboard");
     revalidatePath("/opportunites");
