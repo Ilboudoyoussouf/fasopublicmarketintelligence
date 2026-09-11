@@ -6,7 +6,7 @@ import { createDgcmefConnector } from "@/lib/ingestion/connectors/dgcmef";
 import type { SourceConnector } from "@/lib/ingestion/connector";
 import { getRawStorage } from "@/lib/ingestion/storage";
 import { extractPdfText } from "@/lib/ingestion/extract-text";
-import { segmentAndClassify } from "@/lib/ingestion/parser";
+import { segmentAndClassify, reviseCandidates, type ExtractedNoticeCandidate } from "@/lib/ingestion/parser";
 import { extractNoticesWithGemini, extractQuotidienWithGemini, isGeminiConfigured, reviseNotices, type GeminiNotice } from "@/lib/ingestion/gemini-extractor";
 import { findMatchingMarket, registerBlockOrDetectDuplicate, jaccardSimilarity } from "@/lib/ingestion/dedupe";
 import {
@@ -546,136 +546,150 @@ async function processDocumentBuffer(documentId: string, buffer: Buffer) {
     await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "CLASSIFIED" } });
   });
 
-  let createdMarkets = 0;
-  let updatedMarkets = 0;
-  let republishedBlocks = 0;
-  let skippedUnmatchedUpdates = 0;
-
-  await runJob(documentId, ExtractionJobStage.EXTRACT, async () => {
-    for (const candidate of candidates) {
-      if (!candidate.title) continue;
-
-      // Déduplication par hash de bloc (section 1.3) : un encart publicitaire
-      // ou un résultat identique republié dans un autre numéro n'est jamais
-      // recréé — il est journalisé et ignoré.
-      const dedupe = await registerBlockOrDetectDuplicate(candidate.rawBlock, documentId);
-      if (dedupe.isRepublished) {
-        republishedBlocks++;
-        continue;
-      }
-
-      const existingMarket = await findMatchingMarket(candidate);
-
-      if (existingMarket) {
-        await prisma.marketEvent.create({
-          data: { marketId: existingMarket.id, type: "MARKET_UPDATED", occurredAt: document.publication.publishedAt, sourceDocumentId: documentId, description: `Nouvelle mention détectée dans le quotidien n°${document.publication.numero}.` },
-        });
-        updatedMarkets++;
-        continue;
-      }
-
-      if (!FRESH_CALL_TYPES.has(candidate.publicationTypeGuess)) {
-        skippedUnmatchedUpdates++;
-        continue;
-      }
-
-      const authority = candidate.authorityGuess ? await resolveOrCreateAuthority(candidate.authorityGuess) : null;
-      if (!authority) continue; // aucune autorité n'a pu être devinée dans le texte (préambule absent) — pas de marché incomplet créé
-
-      const market = await prisma.market.create({
-        data: {
-          reference: candidate.reference,
-          title: candidate.title,
-          publicationType: (candidate.publicationTypeGuess as PublicationType) ?? PublicationType.AVIS_APPEL_OFFRES,
-          procedureType: candidate.procedureTypeGuess ? PROCEDURE_MAP[candidate.procedureTypeGuess] : ProcedureType.AUTRE,
-          status: MarketStatus.PUBLIE,
-          contractingAuthorityId: authority.id,
-          amountEstimatedExclTax: candidate.amountExclTax,
-          submissionDeadline: candidate.submissionDeadline,
-          withdrawalDeadline: candidate.withdrawalDeadline,
-          openingAt: candidate.openingAt,
-          bidValidityDays: candidate.bidValidityDays,
-          executionDelayDays: candidate.executionDelayDays,
-          publishedAt: document.publication.publishedAt,
-          sourcePublicationId: document.publicationId,
-          sourceDocumentId: documentId,
-        },
-      });
-      await prisma.notice.create({
-        data: {
-          marketId: market.id, publicationId: document.publicationId, documentId,
-          publicationType: market.publicationType, publishedAt: document.publication.publishedAt,
-          rawExcerpt: candidate.rawBlock.slice(0, 500),
-        },
-      });
-      await prisma.marketEvent.create({ data: { marketId: market.id, type: "MARKET_CREATED", occurredAt: document.publication.publishedAt, sourceDocumentId: documentId } });
-
-      // Exigences, documents requis et lots — extraits par le même passage
-      // heuristique (parser.ts), jamais laissés de côté (l'utilisateur doit
-      // voir « toutes les informations », pas seulement les champs de tête).
-      if (candidate.requirements.length > 0) {
-        await prisma.requirement.createMany({
-          data: candidate.requirements.map((r) => ({
-            marketId: market.id,
-            type: r.type as RequirementType,
-            rawText: r.rawText,
-            thresholdValue: r.thresholdValue,
-            thresholdUnit: r.thresholdUnit,
-            confidence: r.confidence,
-          })),
-        });
-      }
-      if (candidate.requiredDocuments.length > 0) {
-        await prisma.marketRequiredDocument.createMany({
-          data: candidate.requiredDocuments.map((d) => ({
-            marketId: market.id,
-            docType: d.docType as RequiredDocType,
-            mandatory: d.mandatory,
-            rawText: d.rawText,
-          })),
-        });
-      }
-      if (candidate.lots.length > 0) {
-        await prisma.marketLot.createMany({
-          data: candidate.lots.map((l) => ({
-            marketId: market.id,
-            numero: l.numero,
-            objet: l.objet,
-            montant: l.montant,
-          })),
-        });
-      }
-
-      for (const [field, confidence] of [
-        ["amountEstimatedExclTax", candidate.amountExclTax !== null],
-        ["submissionDeadline", candidate.submissionDeadline !== null],
-        ["reference", candidate.reference !== null],
-        ["requirements", candidate.requirements.length > 0],
-        ["requiredDocuments", candidate.requiredDocuments.length > 0],
-      ] as [string, boolean][]) {
-        await prisma.dataQualityCheck.create({
-          data: {
-            entityType: "Market", entityId: market.id, field,
-            status: candidate.confidence >= AUTO_APPROVE_CONFIDENCE_THRESHOLD ? DataQualityStatus.EXTRAIT_AUTOMATIQUEMENT : DataQualityStatus.INCERTAIN,
-            confidence: confidence ? candidate.confidence : 0.2,
-            extractionMethod: "regex-heuristic",
-          },
-        });
-      }
-      createdMarkets++;
-    }
-  });
+  const result = await runJob(documentId, ExtractionJobStage.EXTRACT, () => processRegexCandidates(candidates, document, documentId));
 
   await runJob(documentId, ExtractionJobStage.VALIDATE, async () => {
     const lowConfidence = candidates.some((c) => c.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD);
     await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: lowConfidence ? "EXTRACTED" : "VALIDATED" } });
   });
 
-  if (republishedBlocks > 0) {
-    console.log(`[ingestion] ${republishedBlocks} bloc(s) republié(s) détecté(s) et ignoré(s) dans ${document.filename} (déduplication par hash).`);
+  if (result.republishedBlocks > 0) {
+    console.log(`[ingestion] ${result.republishedBlocks} bloc(s) republié(s) détecté(s) et ignoré(s) dans ${document.filename} (déduplication par hash).`);
   }
 
-  return { status: "ok" as const, candidatesFound: candidates.length, extractionMethod: "regex-heuristic" as const, createdMarkets, updatedMarkets, republishedBlocks, skippedUnmatchedUpdates };
+  return { status: "ok" as const, candidatesFound: candidates.length, extractionMethod: "regex-heuristic" as const, ...result };
+}
+
+// Crée les marchés (et journalise les mises à jour) à partir de candidats
+// extraits par le parseur par règles (parser.ts, sans IA) — pendant écriture
+// partagé par processDocumentBuffer() (robot automatique / repli Gemini) et
+// commitAnalyzedCandidates() (aperçu manuel sans IA avant validation
+// humaine, section admin/sources) : une seule fonction d'écriture, jamais
+// deux chemins divergents pour la même donnée (section 94).
+async function processRegexCandidates(
+  candidates: ExtractedNoticeCandidate[],
+  document: { id: string; publicationId: string; publication: { publishedAt: Date; numero: string } },
+  documentId: string,
+) {
+  let createdMarkets = 0;
+  let updatedMarkets = 0;
+  let republishedBlocks = 0;
+  let skippedUnmatchedUpdates = 0;
+
+  for (const candidate of candidates) {
+    if (!candidate.title) continue;
+
+    // Déduplication par hash de bloc (section 1.3) : un encart publicitaire
+    // ou un résultat identique republié dans un autre numéro n'est jamais
+    // recréé — il est journalisé et ignoré.
+    const dedupe = await registerBlockOrDetectDuplicate(candidate.rawBlock, documentId);
+    if (dedupe.isRepublished) {
+      republishedBlocks++;
+      continue;
+    }
+
+    const existingMarket = await findMatchingMarket(candidate);
+
+    if (existingMarket) {
+      await prisma.marketEvent.create({
+        data: { marketId: existingMarket.id, type: "MARKET_UPDATED", occurredAt: document.publication.publishedAt, sourceDocumentId: documentId, description: `Nouvelle mention détectée dans le quotidien n°${document.publication.numero}.` },
+      });
+      updatedMarkets++;
+      continue;
+    }
+
+    if (!FRESH_CALL_TYPES.has(candidate.publicationTypeGuess)) {
+      skippedUnmatchedUpdates++;
+      continue;
+    }
+
+    const authority = candidate.authorityGuess ? await resolveOrCreateAuthority(candidate.authorityGuess) : null;
+    if (!authority) continue; // aucune autorité n'a pu être devinée dans le texte (préambule absent) — pas de marché incomplet créé
+
+    const market = await prisma.market.create({
+      data: {
+        reference: candidate.reference,
+        title: candidate.title,
+        publicationType: (candidate.publicationTypeGuess as PublicationType) ?? PublicationType.AVIS_APPEL_OFFRES,
+        procedureType: candidate.procedureTypeGuess ? PROCEDURE_MAP[candidate.procedureTypeGuess] : ProcedureType.AUTRE,
+        status: MarketStatus.PUBLIE,
+        contractingAuthorityId: authority.id,
+        amountEstimatedExclTax: candidate.amountExclTax,
+        submissionDeadline: candidate.submissionDeadline,
+        withdrawalDeadline: candidate.withdrawalDeadline,
+        openingAt: candidate.openingAt,
+        bidValidityDays: candidate.bidValidityDays,
+        executionDelayDays: candidate.executionDelayDays,
+        publishedAt: document.publication.publishedAt,
+        sourcePublicationId: document.publicationId,
+        sourceDocumentId: documentId,
+      },
+    });
+    await prisma.notice.create({
+      data: {
+        marketId: market.id, publicationId: document.publicationId, documentId,
+        publicationType: market.publicationType, publishedAt: document.publication.publishedAt,
+        rawExcerpt: candidate.rawBlock.slice(0, 500),
+      },
+    });
+    await prisma.marketEvent.create({ data: { marketId: market.id, type: "MARKET_CREATED", occurredAt: document.publication.publishedAt, sourceDocumentId: documentId } });
+
+    // Exigences, documents requis et lots — extraits par le même passage
+    // heuristique (parser.ts), jamais laissés de côté (l'utilisateur doit
+    // voir « toutes les informations », pas seulement les champs de tête).
+    if (candidate.requirements.length > 0) {
+      await prisma.requirement.createMany({
+        data: candidate.requirements.map((r) => ({
+          marketId: market.id,
+          type: r.type as RequirementType,
+          rawText: r.rawText,
+          thresholdValue: r.thresholdValue,
+          thresholdUnit: r.thresholdUnit,
+          confidence: r.confidence,
+        })),
+      });
+    }
+    if (candidate.requiredDocuments.length > 0) {
+      await prisma.marketRequiredDocument.createMany({
+        data: candidate.requiredDocuments.map((d) => ({
+          marketId: market.id,
+          docType: d.docType as RequiredDocType,
+          mandatory: d.mandatory,
+          rawText: d.rawText,
+        })),
+      });
+    }
+    if (candidate.lots.length > 0) {
+      await prisma.marketLot.createMany({
+        data: candidate.lots.map((l) => ({
+          marketId: market.id,
+          numero: l.numero,
+          objet: l.objet,
+          montant: l.montant,
+        })),
+      });
+    }
+
+    for (const [field, confidence] of [
+      ["amountEstimatedExclTax", candidate.amountExclTax !== null],
+      ["submissionDeadline", candidate.submissionDeadline !== null],
+      ["reference", candidate.reference !== null],
+      ["requirements", candidate.requirements.length > 0],
+      ["requiredDocuments", candidate.requiredDocuments.length > 0],
+    ] as [string, boolean][]) {
+      await prisma.dataQualityCheck.create({
+        data: {
+          entityType: "Market", entityId: market.id, field,
+          status: candidate.confidence >= AUTO_APPROVE_CONFIDENCE_THRESHOLD ? DataQualityStatus.EXTRAIT_AUTOMATIQUEMENT : DataQualityStatus.INCERTAIN,
+          confidence: confidence ? candidate.confidence : 0.2,
+          extractionMethod: "regex-heuristic",
+        },
+      });
+    }
+    createdMarkets++;
+  }
+
+  return { createdMarkets, updatedMarkets, republishedBlocks, skippedUnmatchedUpdates };
 }
 
 export async function runFullIngestion(sourceId: string) {
@@ -1066,4 +1080,102 @@ export async function commitAnalyzedDocument(documentId: string, notices: unknow
   });
 
   return { status: "ok" as const, candidatesFound: revised.length, ...result };
+}
+
+// ---------------------------------------------------------------------
+// Dépôt manuel SANS IA (en plus du chemin Gemini ci-dessus, jamais à sa
+// place) : mêmes principes — aperçu avant écriture, une seule fonction
+// d'écriture partagée (processRegexCandidates) — mais avec le parseur par
+// règles (parser.ts), utile quand Gemini est indisponible (clé absente,
+// quota épuisé) ou simplement quand un aperçu immédiat est préférable à une
+// extraction IA de plusieurs minutes. L'extraction par règles est un calcul
+// local et synchrone (pas d'appel réseau) : contrairement au chemin Gemini,
+// elle n'a pas besoin du dispositif arrière-plan + polling (aucun risque
+// d'expiration du proxy inverse ici) et répond directement.
+// ---------------------------------------------------------------------
+
+export type CandidatesAnalysis =
+  | { status: "ok"; candidates: ExtractedNoticeCandidate[] }
+  | { status: "extraction_failed"; error: string };
+
+/**
+ * Crée le document, extrait son texte et le segmente/classe avec le
+ * parseur par règles — SANS rien écrire en base pour les marchés eux-mêmes
+ * (aperçu humain avant ajout, comme pour analyzeUploadedPdf côté Gemini).
+ * Aucun numéro de quotidien ni date de publication n'est demandé à
+ * l'utilisateur : deviné depuis le nom de fichier (guessNumeroFromFilename)
+ * et la date du jour — le parseur par règles, contrairement à Gemini, ne
+ * lit pas la page de garde du PDF pour les corriger après coup.
+ */
+export async function analyzeUploadedPdfWithoutAI(params: {
+  sourceId: string;
+  filename: string;
+  buffer: Buffer;
+}): Promise<{ documentId: string; publicationNumero: string; publishedAt: Date } & CandidatesAnalysis> {
+  const provisionalNumero = guessNumeroFromFilename(params.filename);
+  const provisionalDate = new Date();
+  const { document } = await createUploadedDocument({
+    sourceId: params.sourceId,
+    filename: params.filename,
+    buffer: params.buffer,
+    publicationNumero: provisionalNumero,
+    publishedAt: provisionalDate,
+  });
+
+  try {
+    const fullText = await runJob(document.id, ExtractionJobStage.PARSE, async () => {
+      const extracted = await extractPdfText(params.buffer);
+      if (extracted.method === "failed") {
+        await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "FAILED" } });
+        throw new Error("Extraction de texte impossible (PDF illisible et OCR indisponible).");
+      }
+      for (const page of extracted.pages) {
+        await prisma.documentPage.upsert({
+          where: { documentId_pageNumber: { documentId: document.id, pageNumber: page.pageNumber } },
+          update: { rawText: page.text, ocrConfidence: page.confidence },
+          create: { documentId: document.id, pageNumber: page.pageNumber, rawText: page.text, ocrConfidence: page.confidence },
+        });
+      }
+      const text = extracted.pages.map((p) => p.text).join("\n");
+      await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: extracted.method === "ocr" ? "OCR_DONE" : "PARSED" } });
+      return text;
+    });
+
+    const candidates = await runJob(document.id, ExtractionJobStage.CLASSIFY, async () => {
+      const found = segmentAndClassify(fullText);
+      await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "CLASSIFIED" } });
+      return found;
+    });
+
+    return { documentId: document.id, publicationNumero: provisionalNumero, publishedAt: provisionalDate, status: "ok" as const, candidates };
+  } catch (err) {
+    return {
+      documentId: document.id,
+      publicationNumero: provisionalNumero,
+      publishedAt: provisionalDate,
+      status: "extraction_failed" as const,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Valide un aperçu de candidats (parseur par règles, éventuellement filtré
+ * côté client) et crée les marchés correspondants — réutilise
+ * processRegexCandidates(), la même fonction d'écriture que le robot
+ * automatique et le repli Gemini (jamais deux façons divergentes d'écrire
+ * la même donnée, section 94). Les candidats sont revalidés côté serveur
+ * (reviseCandidates) avant toute écriture, quoi qu'il en soit.
+ */
+export async function commitAnalyzedCandidates(documentId: string, candidates: unknown[]) {
+  const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, include: { publication: true } });
+  const revised = reviseCandidates(candidates);
+
+  const result = await runJob(documentId, ExtractionJobStage.EXTRACT, () => processRegexCandidates(revised, document, documentId));
+  await runJob(documentId, ExtractionJobStage.VALIDATE, async () => {
+    const lowConfidence = revised.some((c) => c.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD);
+    await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: lowConfidence ? "EXTRACTED" : "VALIDATED" } });
+  });
+
+  return { status: "ok" as const, candidatesFound: revised.length, extractionMethod: "regex-heuristic" as const, ...result };
 }

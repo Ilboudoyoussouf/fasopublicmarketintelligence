@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { segmentAndClassify } from "@/lib/ingestion/parser";
+import { segmentAndClassify, reviseCandidates } from "@/lib/ingestion/parser";
 
 describe("segmentAndClassify — extraction structurée (section 2.2)", () => {
   const sample = `
@@ -276,5 +276,59 @@ N°2026-00X/TEST
 `;
     const [candidate] = segmentAndClassify(sample);
     expect(candidate.title).toBe("Acquisition de matériel informatique au profit de la mairie de Test");
+  });
+});
+
+// reviseCandidates() revalide un aperçu de candidats après aller-retour
+// client (section « upload sans IA »), avant toute écriture en base — mêmes
+// garanties que reviseNotices() côté Gemini : un candidat malformé n'annule
+// jamais tout le lot (safeParse par élément, pas un .map(parse) qui lèverait).
+describe("reviseCandidates — revalidation après aller-retour client", () => {
+  const validCandidate = {
+    rawBlock: "AVIS DE DEMANDE DE PRIX N°2026-001",
+    publicationTypeGuess: "DEMANDE_PRIX",
+    procedureTypeGuess: "DEMANDE_PRIX",
+    reference: "2026-001",
+    title: "Acquisition de fournitures de bureau",
+    authorityGuess: "Commune de Test",
+    amountExclTax: 12_000_000,
+    submissionDeadline: new Date("2026-10-15"),
+    withdrawalDeadline: null,
+    openingAt: null,
+    bidValidityDays: 90,
+    executionDelayDays: 60,
+    regionGuess: "Centre",
+    requirements: [],
+    requiredDocuments: [],
+    lots: [],
+    confidence: 0.8,
+  };
+
+  it("garde un candidat valide intact (dates réelles, pas des chaînes)", () => {
+    const revised = reviseCandidates([validCandidate]);
+    expect(revised).toHaveLength(1);
+    expect(revised[0].title).toBe("Acquisition de fournitures de bureau");
+    expect(revised[0].submissionDeadline).toBeInstanceOf(Date);
+    expect(revised[0].submissionDeadline?.toISOString().slice(0, 10)).toBe("2026-10-15");
+  });
+
+  it("accepte aussi une date sérialisée en chaîne (aller-retour JSON)", () => {
+    const revised = reviseCandidates([{ ...validCandidate, submissionDeadline: "2026-10-15T00:00:00.000Z" }]);
+    expect(revised[0].submissionDeadline).toBeInstanceOf(Date);
+  });
+
+  it("écarte un seul candidat malformé sans perdre les autres", () => {
+    const malformed = { ...validCandidate, rawBlock: undefined };
+    const revised = reviseCandidates([validCandidate, malformed, validCandidate]);
+    expect(revised).toHaveLength(2);
+  });
+
+  it("retombe sur des valeurs de repli pour un type de publication inconnu", () => {
+    const revised = reviseCandidates([{ ...validCandidate, publicationTypeGuess: "TYPE_INEXISTANT" }]);
+    expect(revised[0].publicationTypeGuess).toBe("AVIS_APPEL_OFFRES");
+  });
+
+  it("renvoie un tableau vide pour une entrée qui n'est pas un objet", () => {
+    expect(reviseCandidates([null, 42, "texte", undefined])).toEqual([]);
   });
 });

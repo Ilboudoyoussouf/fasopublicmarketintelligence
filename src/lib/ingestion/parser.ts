@@ -3,6 +3,8 @@
 // français : déterministe, traçable, et sert de première passe avant
 // validation humaine (section 45) — jamais présentée comme une vérité
 // absolue (chaque champ porte une confiance, section 44).
+import { z } from "zod";
+import { PublicationType, ProcedureType, RequirementType, RequiredDocType } from "@prisma/client";
 
 export type RequirementCandidate = {
   type: string; // RequirementType
@@ -421,4 +423,96 @@ export function segmentAndClassify(fullText: string): ExtractedNoticeCandidate[]
       confidence: Math.round((fieldsFound / totalFields) * 100) / 100,
     };
   });
+}
+
+// --- Revalidation d'un aperçu de candidats après aller-retour client (section « upload sans IA ») ---
+//
+// segmentAndClassify() tourne côté serveur pour produire l'aperçu, mais la
+// validation humaine se fait sur le tableau côté client (voir
+// commitAnalyzedCandidates dans pipeline.ts) : les candidats reviennent donc
+// en argument d'une Server Action avant d'être écrits en base. On ne leur
+// fait jamais confiance aveuglément à ce stade (même principe que
+// reviseNotices pour Gemini, gemini-extractor.ts) — et, comme pour un lot
+// Gemini, UN candidat malformé ne doit jamais faire perdre tout le lot
+// (safeParse + filtre, pas un .map(parse) qui lèverait pour tous).
+function nullableNumberCandidate() {
+  return z
+    .union([z.number(), z.string(), z.null(), z.undefined()])
+    .optional()
+    .catch(undefined)
+    .transform((v) => {
+      if (v === null || v === undefined || v === "") return null;
+      const n = typeof v === "number" ? v : Number(String(v).replace(/[\s,]/g, ""));
+      return Number.isFinite(n) ? n : null;
+    });
+}
+
+function nullableDateCandidate() {
+  return z
+    .union([z.date(), z.string(), z.null(), z.undefined()])
+    .optional()
+    .catch(null)
+    .transform((v) => {
+      if (!v) return null;
+      const d = v instanceof Date ? v : new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d;
+    });
+}
+
+function nullableStringCandidate(max: number) {
+  return z
+    .string()
+    .nullable()
+    .optional()
+    .catch(null)
+    .transform((v) => (typeof v === "string" && v.length > 0 ? v.slice(0, max) : null));
+}
+
+const requirementCandidateSchema = z.object({
+  type: z.nativeEnum(RequirementType).catch(RequirementType.PIECES_ADMINISTRATIVES),
+  rawText: z.string().catch("").transform((v) => v.slice(0, 2000)),
+  thresholdValue: nullableNumberCandidate(),
+  thresholdUnit: nullableStringCandidate(60),
+  confidence: z.number().catch(0.5),
+});
+
+const requiredDocCandidateSchema = z.object({
+  docType: z.nativeEnum(RequiredDocType).catch(RequiredDocType.AUTRE),
+  mandatory: z.boolean().default(true).catch(true),
+  rawText: nullableStringCandidate(2000),
+});
+
+const lotCandidateSchema = z.object({
+  numero: z.string().catch("").transform((v) => v.slice(0, 20)),
+  objet: z.string().catch("").transform((v) => v.slice(0, 150)),
+  montant: nullableNumberCandidate(),
+});
+
+const noticeCandidateSchema = z.object({
+  rawBlock: z.string().min(1).transform((v) => v.slice(0, 2000)),
+  publicationTypeGuess: z.nativeEnum(PublicationType).catch(PublicationType.AVIS_APPEL_OFFRES),
+  procedureTypeGuess: z.nativeEnum(ProcedureType).nullable().optional().catch(null).transform((v) => v ?? null),
+  reference: nullableStringCandidate(190),
+  title: z.string().min(1).nullable().optional().catch(null).transform((v) => v ?? null),
+  authorityGuess: nullableStringCandidate(190),
+  amountExclTax: nullableNumberCandidate(),
+  submissionDeadline: nullableDateCandidate(),
+  withdrawalDeadline: nullableDateCandidate(),
+  openingAt: nullableDateCandidate(),
+  bidValidityDays: nullableNumberCandidate(),
+  executionDelayDays: nullableNumberCandidate(),
+  regionGuess: nullableStringCandidate(120),
+  requirements: z.array(requirementCandidateSchema).default([]).catch([]),
+  requiredDocuments: z.array(requiredDocCandidateSchema).default([]).catch([]),
+  lots: z.array(lotCandidateSchema).default([]).catch([]),
+  confidence: z.number().catch(0),
+});
+
+export function reviseCandidates(candidates: unknown[]): ExtractedNoticeCandidate[] {
+  const revised: ExtractedNoticeCandidate[] = [];
+  for (const candidate of candidates) {
+    const parsed = noticeCandidateSchema.safeParse(candidate);
+    if (parsed.success) revised.push(parsed.data);
+  }
+  return revised;
 }

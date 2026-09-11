@@ -4,7 +4,10 @@ import { prisma } from "@/lib/prisma";
 import { requirePlatformAdmin } from "@/lib/session";
 import { revalidatePath } from "next/cache";
 import { DataQualityStatus } from "@prisma/client";
-import { runFullIngestion, discoverAndAnalyzeSource, commitAnalyzedDocument, analyzeUploadedPdf, ingestExistingDocument, getAnalysisStatus } from "@/lib/ingestion/pipeline";
+import {
+  runFullIngestion, discoverAndAnalyzeSource, commitAnalyzedDocument, analyzeUploadedPdf, ingestExistingDocument, getAnalysisStatus,
+  analyzeUploadedPdfWithoutAI, commitAnalyzedCandidates,
+} from "@/lib/ingestion/pipeline";
 import { clearDemoMarkets } from "@/lib/admin/clear-demo-data";
 
 export async function clearDemoDataAction() {
@@ -136,6 +139,55 @@ export async function commitAnalyzedDocumentAction(documentId: string, notices: 
   await requirePlatformAdmin();
   try {
     const result = await commitAnalyzedDocument(documentId, notices);
+    revalidatePath("/marches");
+    revalidatePath("/dashboard");
+    revalidatePath("/opportunites");
+    revalidatePath("/admin/sources");
+    revalidatePath("/admin/importations");
+    revalidatePath("/admin/jobs");
+    revalidatePath("/admin/validation");
+    return { ok: true as const, ...result };
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Dépôt manuel SANS IA (parser par règles, parser.ts) : même principe
+// d'aperçu avant validation que le dépôt Gemini (analyzeUploadedPdfAction),
+// mais sans appel externe — le calcul est local et rapide, donc cette action
+// attend directement le résultat (pas de polling nécessaire ici, à la
+// différence du chemin Gemini où l'appel peut prendre plusieurs minutes).
+export async function analyzeUploadedPdfWithoutAIAction(formData: FormData) {
+  await requirePlatformAdmin();
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return { ok: false as const, error: "Aucun fichier PDF reçu." };
+  }
+  const sourceId = String(formData.get("sourceId") ?? "").trim();
+  if (!sourceId) {
+    return { ok: false as const, error: "Source requise." };
+  }
+
+  try {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const result = await analyzeUploadedPdfWithoutAI({ sourceId, filename: file.name, buffer });
+    revalidatePath("/admin/sources");
+    revalidatePath("/admin/importations");
+    revalidatePath("/admin/jobs");
+    return { ok: true as const, ...result };
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Ajoute à la base les marchés d'un aperçu (parseur par règles) déjà validé
+// par un humain — mêmes garanties que commitAnalyzedDocumentAction : revalidé
+// server-side (reviseCandidates, dans parser.ts) avant toute écriture.
+export async function commitAnalyzedCandidatesAction(documentId: string, candidates: unknown[]) {
+  await requirePlatformAdmin();
+  try {
+    const result = await commitAnalyzedCandidates(documentId, candidates);
     revalidatePath("/marches");
     revalidatePath("/dashboard");
     revalidatePath("/opportunites");

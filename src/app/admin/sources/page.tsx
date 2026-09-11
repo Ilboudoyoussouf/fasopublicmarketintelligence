@@ -6,6 +6,7 @@ import { formatDateTime } from "@/lib/utils";
 import { IngestButton } from "@/components/domain/IngestButton";
 import { ClearDemoDataButton } from "@/components/domain/ClearDemoDataButton";
 import { UploadAndAnalyzeForm } from "@/components/domain/UploadAndAnalyzeForm";
+import { UploadWithoutAIForm } from "@/components/domain/UploadWithoutAIForm";
 import { SourceAnalysisPanel } from "@/components/domain/SourceAnalysisPanel";
 
 // L'extraction Gemini d'un quotidien de plusieurs dizaines de pages peut
@@ -30,6 +31,15 @@ export default async function AdminSourcesPage() {
             <p className="text-xs text-ink-muted">Dépose le PDF d&apos;un quotidien DGCMEF (numéro déjà en main, sans attendre le passage du robot). L&apos;IA (Gemini) extrait tous les champs de chaque marché — titre, autorité, secteur, région, financement, montants, calendrier complet, exigences, pièces requises, lots — puis affiche un aperçu : rien n&apos;est ajouté à la base tant que vous ne validez pas explicitement.</p>
           </div>
           <UploadAndAnalyzeForm sources={sources.map((s) => ({ id: s.id, name: s.name }))} />
+        </CardBody>
+      </Card>
+      <Card>
+        <CardBody className="space-y-2">
+          <div>
+            <p className="text-sm font-medium text-ink">Import manuel d&apos;un quotidien — sans IA</p>
+            <p className="text-xs text-ink-muted">Même principe (aperçu avant ajout, rien n&apos;est écrit tant que vous ne validez pas), mais avec le parseur par règles au lieu de Gemini : plus rapide, sans dépendance à un quota externe. Utile en repli, ou simplement pour un dépôt immédiat sans attendre l&apos;IA.</p>
+          </div>
+          <UploadWithoutAIForm sources={sources.map((s) => ({ id: s.id, name: s.name }))} />
         </CardBody>
       </Card>
       <Card>
