@@ -16,6 +16,8 @@ type Analysis = {
   publishedAt: Date;
   status: "ok" | "gemini_not_configured" | "download_failed" | "extraction_failed";
   notices?: GeminiNotice[];
+  truncated?: boolean;
+  invalidCount?: number;
   error?: string;
 };
 
@@ -77,7 +79,7 @@ export function SourceAnalysisPanel({ sourceId }: { sourceId: string }) {
           {a.status === "download_failed" && <p className="px-3 py-2 text-[11px] text-critical">Échec du téléchargement de ce document.</p>}
           {a.status === "extraction_failed" && <p className="px-3 py-2 text-[11px] text-critical">Échec de l&apos;extraction Gemini : {a.error}</p>}
 
-          {a.status === "ok" && a.notices && <AnalyzedDocumentPreview documentId={a.documentId} notices={a.notices} />}
+          {a.status === "ok" && a.notices && <AnalyzedDocumentPreview documentId={a.documentId} notices={a.notices} truncated={a.truncated} invalidCount={a.invalidCount} />}
         </div>
       ))}
     </div>

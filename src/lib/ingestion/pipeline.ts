@@ -850,7 +850,7 @@ export async function analyzeUploadedPdf(params: {
     const finalDate = extraction.publicationDate ?? provisionalDate;
     await reconcilePublicationMetadata(document, publication, provisionalNumero, finalNumero, finalDate);
 
-    return { documentId: document.id, status: "ok", notices: extraction.notices, publicationNumero: finalNumero, publishedAt: finalDate };
+    return { documentId: document.id, status: "ok", notices: extraction.notices, truncated: extraction.truncated, invalidCount: extraction.invalidCount, publicationNumero: finalNumero, publishedAt: finalDate };
   } catch (err) {
     await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "FAILED" } });
     return {
@@ -883,7 +883,13 @@ export async function ingestExistingDocument(documentId: string, buffer: Buffer)
 // ---------------------------------------------------------------------
 
 export type DocumentAnalysis =
-  | { status: "ok"; notices: GeminiNotice[] }
+  // truncated=true : la réponse Gemini a été coupée avant la fin (limite de
+  // tokens de sortie du modèle, fréquent sur un quotidien à 70-90+ avis très
+  // détaillés) — les avis listés restent fiables, mais le document en
+  // contient probablement d'autres au-delà de la coupure. L'admin le voit
+  // dans l'aperçu et peut relancer l'analyse plutôt que de croire, à tort,
+  // avoir la liste complète.
+  | { status: "ok"; notices: GeminiNotice[]; truncated: boolean; invalidCount: number }
   | { status: "gemini_not_configured" }
   | { status: "download_failed" }
   | { status: "extraction_failed"; error: string };
@@ -909,12 +915,12 @@ export async function analyzeDocument(documentId: string): Promise<DocumentAnaly
   if (!isGeminiConfigured()) return { status: "gemini_not_configured" };
 
   try {
-    const notices = await runJob(documentId, ExtractionJobStage.CLASSIFY, async () => {
-      const result = await extractNoticesWithGemini(buffer);
+    const extraction = await runJob(documentId, ExtractionJobStage.CLASSIFY, async () => {
+      const result = await extractQuotidienWithGemini(buffer);
       await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "CLASSIFIED" } });
       return result;
     });
-    return { status: "ok", notices };
+    return { status: "ok", notices: extraction.notices, truncated: extraction.truncated, invalidCount: extraction.invalidCount };
   } catch (err) {
     await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "FAILED" } });
     return { status: "extraction_failed", error: err instanceof Error ? err.message : String(err) };

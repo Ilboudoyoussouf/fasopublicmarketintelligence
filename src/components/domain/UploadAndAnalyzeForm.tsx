@@ -10,7 +10,7 @@ import { AnalyzedDocumentPreview } from "@/components/domain/AnalyzedDocumentPre
 import type { GeminiNotice } from "@/lib/ingestion/gemini-extractor";
 
 type Analysis =
-  | { status: "ok"; documentId: string; notices: GeminiNotice[]; publicationNumero: string; publishedAt: Date }
+  | { status: "ok"; documentId: string; notices: GeminiNotice[]; truncated: boolean; invalidCount: number; publicationNumero: string; publishedAt: Date }
   | { status: "gemini_not_configured"; documentId: string; publicationNumero: string; publishedAt: Date }
   | { status: "extraction_failed"; documentId: string; error: string; publicationNumero: string; publishedAt: Date };
 
@@ -133,7 +133,7 @@ export function UploadAndAnalyzeForm({ sources }: { sources: { id: string; name:
             </div>
           </div>
 
-          {analysis.status === "ok" && <AnalyzedDocumentPreview documentId={analysis.documentId} notices={analysis.notices} />}
+          {analysis.status === "ok" && <AnalyzedDocumentPreview documentId={analysis.documentId} notices={analysis.notices} truncated={analysis.truncated} invalidCount={analysis.invalidCount} />}
 
           {analysis.status !== "ok" && (
             <div className="space-y-2 px-3 py-2">

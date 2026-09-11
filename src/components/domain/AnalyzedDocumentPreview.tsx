@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { UploadCloud } from "lucide-react";
+import { UploadCloud, AlertTriangle } from "lucide-react";
 import { commitAnalyzedDocumentAction } from "@/app/admin/actions";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -19,7 +19,7 @@ export const FRESH_TYPES = new Set([
 // ajoutée » (extraction IA → aperçu → validation humaine) qu'il s'agisse
 // d'un document découvert automatiquement sur une source ou déposé à la
 // main : un seul composant, aucune divergence d'affichage entre les deux.
-export function AnalyzedDocumentPreview({ documentId, notices }: { documentId: string; notices: GeminiNotice[] }) {
+export function AnalyzedDocumentPreview({ documentId, notices, truncated, invalidCount }: { documentId: string; notices: GeminiNotice[]; truncated?: boolean; invalidCount?: number }) {
   const [selected, setSelected] = useState<Set<number>>(new Set(notices.map((_, i) => i)));
   const [state, setState] = useState<{ pending: boolean; message: string | null; error: string | null }>({ pending: false, message: null, error: null });
 
@@ -65,6 +65,22 @@ export function AnalyzedDocumentPreview({ documentId, notices }: { documentId: s
 
   return (
     <>
+      {truncated && (
+        <p className="flex items-start gap-1.5 border-b border-line bg-warning-soft px-3 py-2 text-[11px] text-warning">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          La réponse de l&apos;IA a été coupée avant la fin de l&apos;analyse (document volumineux) — les {notices.length} avis ci-dessous sont fiables, mais le document en contient probablement d&apos;autres au-delà. Validez ceux-ci puis relancez l&apos;analyse pour tenter de capturer le reste.
+        </p>
+      )}
+      {Boolean(invalidCount) && (
+        <p className="flex items-start gap-1.5 border-b border-line bg-warning-soft px-3 py-2 text-[11px] text-warning">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {invalidCount} avis sur {notices.length + (invalidCount ?? 0)} n&apos;ont pas pu être validés (forme inattendue) et ont été écartés — les {notices.length} restants ci-dessous sont fiables et n&apos;en dépendent pas.
+        </p>
+      )}
+      <div className="flex items-center gap-3 border-b border-line px-3 py-1.5 text-[11px]">
+        <button type="button" onClick={() => setSelected(new Set(notices.map((_, i) => i)))} className="text-brand hover:underline">Tout sélectionner</button>
+        <button type="button" onClick={() => setSelected(new Set())} className="text-brand hover:underline">Tout désélectionner</button>
+      </div>
       <div className="max-h-[420px] overflow-y-auto">
         <table className="w-full text-left text-[12px]">
           <thead className="sticky top-0 bg-paper text-[11px] uppercase tracking-wide text-ink-faint">

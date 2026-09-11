@@ -94,11 +94,16 @@ function nullableTruncated(max: number) {
     .transform((v) => (typeof v === "string" && v.length > 0 ? v.slice(0, max) : null));
 }
 // Nombre tolérant : Gemini renvoie parfois un nombre sous forme de chaîne
-// ("17796610") ou omet le champ — jamais un échec de validation pour ça.
+// ("17796610"), omet le champ, ou (plus rarement) renvoie un type totalement
+// inattendu (booléen, tableau) — jamais un échec de validation pour ça : un
+// seul champ de ce type mal formé sur un lot de 80 avis ne doit PAS faire
+// perdre tout le lot (.catch() absorbe le type inattendu en amont du
+// .transform(), qui gère déjà les valeurs "creuses").
 function nullableNumber() {
   return z
     .union([z.number(), z.string(), z.null(), z.undefined()])
     .optional()
+    .catch(undefined)
     .transform((v) => {
       if (v === null || v === undefined || v === "") return null;
       const n = typeof v === "number" ? v : Number(String(v).replace(/[\s,]/g, ""));
@@ -115,7 +120,7 @@ const requirementSchema = z.object({
 
 const requiredDocSchema = z.object({
   docType: enumOrFallback(REQUIRED_DOC_TYPES, "AUTRE"),
-  mandatory: z.boolean().default(true),
+  mandatory: z.boolean().default(true).catch(true),
   rawText: nullableTruncated(2000),
 });
 
@@ -134,6 +139,7 @@ const dateStringSchema = z
   .string()
   .nullable()
   .optional()
+  .catch(null) // ex. Gemini renvoie parfois un nombre (année seule) au lieu d'une chaîne AAAA-MM-JJ
   .transform((v) => {
     if (!v) return null;
     const m = v.match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -143,7 +149,7 @@ const dateStringSchema = z
   });
 
 const noticeSchema = z.object({
-  isFreshCall: z.boolean().default(false),
+  isFreshCall: z.boolean().default(false).catch(false),
   publicationType: enumOrFallback(PUBLICATION_TYPES, "AVIS_APPEL_OFFRES"),
   procedureType: z.preprocess((v) => (typeof v === "string" ? v.toUpperCase().replace(/[\s-]/g, "_") : v), z.enum(PROCEDURE_TYPES).nullable().catch(null)).optional(),
   title: truncated(190),
@@ -169,9 +175,15 @@ const noticeSchema = z.object({
   openingAt: dateStringSchema,
   bidValidityDays: nullableNumber(),
   executionDelayDays: nullableNumber(),
-  requirements: z.array(requirementSchema).max(60).default([]),
-  requiredDocuments: z.array(requiredDocSchema).max(60).default([]),
-  lots: z.array(lotSchema).max(60).default([]),
+  // .catch([]) en plus de .default([]) : un seul élément mal formé dans une
+  // de ces listes ne doit pas faire échouer la validation de tout l'avis
+  // (et donc, en amont, de tout le lot de 70-90 avis — voir
+  // extractQuotidienWithGemini, qui isole déjà chaque avis, mais la
+  // résilience à ce niveau évite d'en perdre le contenu entier pour une
+  // seule exigence/un seul lot mal formé).
+  requirements: z.array(requirementSchema).max(60).default([]).catch([]),
+  requiredDocuments: z.array(requiredDocSchema).max(60).default([]).catch([]),
+  lots: z.array(lotSchema).max(60).default([]).catch([]),
   // Champs utiles quand isFreshCall=false (résultat/attribution/rectificatif...) :
   relatedReference: nullableTruncated(190),
   resultAt: dateStringSchema,
@@ -180,7 +192,7 @@ const noticeSchema = z.object({
   numberOfBids: nullableNumber(),
   decision: nullableTruncated(2000),
   rawExcerpt: truncated(2000),
-  confidence: z.union([z.number(), z.string()]).optional().transform((v) => {
+  confidence: z.union([z.number(), z.string()]).optional().catch(undefined).transform((v) => {
     const n = typeof v === "number" ? v : Number(v);
     return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.7;
   }),
@@ -191,10 +203,18 @@ export type GeminiNotice = z.infer<typeof noticeSchema>;
 // Numéro et date du quotidien lui-même (page de garde/en-tête) — permet au
 // dépôt manuel (section admin/sources) de se passer d'une saisie humaine :
 // l'IA lit ces informations dans le document au lieu qu'on les lui demande.
+//
+// "notices" n'est délibérément PAS validé ici avec noticeSchema : avec
+// z.array(noticeSchema), UN SEUL élément non conforme (un type inattendu sur
+// un champ que même les .catch() ci-dessus n'auraient pas anticipé) fait
+// échouer la validation du tableau ENTIER — sur un lot de 70-90 avis, ça
+// revient à perdre TOUS les marchés pour la faute d'un seul. Chaque avis est
+// donc validé individuellement dans extractQuotidienWithGemini(), qui ne
+// rejette que l'avis fautif et conserve tous les autres.
 const responseSchema = z.object({
   quotidienNumero: nullableTruncated(20),
   quotidienDate: dateStringSchema,
-  notices: z.array(noticeSchema).max(300).default([]),
+  notices: z.array(z.unknown()).max(300).default([]).catch([]),
 });
 
 /**
@@ -207,7 +227,14 @@ const responseSchema = z.object({
  * initiale.
  */
 export function reviseNotices(notices: unknown[]): GeminiNotice[] {
-  return notices.map((n) => noticeSchema.parse(n));
+  // safeParse + filter plutôt que .map(parse) : un seul avis dont la forme
+  // aurait été altérée pendant l'aller-retour côté client ne doit pas faire
+  // échouer la validation — et donc l'écriture en base — de tous les autres
+  // avis que l'admin vient pourtant de sélectionner et valider.
+  return notices
+    .map((n) => noticeSchema.safeParse(n))
+    .filter((r): r is z.ZodSafeParseSuccess<GeminiNotice> => r.success)
+    .map((r) => r.data);
 }
 
 const EXTRACTION_PROMPT = `Tu es un extracteur de données structurées pour les quotidiens des marchés publics du Burkina Faso, publiés par la DGCMEF (Direction Générale du Contrôle des Marchés publics et des Engagements Financiers).
@@ -295,7 +322,66 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callGeminiOnce(pdfBuffer: Buffer, apiKey: string, timeoutMs: number): Promise<unknown> {
+// Sur un quotidien volumineux (70-90+ avis très détaillés), la réponse
+// Gemini peut atteindre la limite de tokens de sortie du modèle avant
+// d'avoir fermé le JSON (finishReason="MAX_TOKENS") — constaté en pratique.
+// `JSON.parse` échoue alors intégralement et TOUT l'aperçu disparaît, alors
+// que la plupart des avis ont bel et bien été générés avant la coupure.
+// On récupère ici chaque objet {...} complet du tableau "notices" jusqu'à la
+// troncature — un aperçu partiel mais fiable vaut mieux qu'aucun aperçu.
+function tryRecoverPartialNotices(text: string): unknown[] {
+  const arrayKeyIndex = text.indexOf('"notices"');
+  if (arrayKeyIndex === -1) return [];
+  const bracketStart = text.indexOf("[", arrayKeyIndex);
+  if (bracketStart === -1) return [];
+
+  const notices: unknown[] = [];
+  let depth = 0;
+  let objectStart = -1;
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = bracketStart + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escapeNext = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === "{") {
+      if (depth === 0) objectStart = i;
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && objectStart !== -1) {
+        const candidate = text.slice(objectStart, i + 1);
+        try {
+          notices.push(JSON.parse(candidate));
+        } catch {
+          // Un objet isolé corrompu (rare, coupure en plein milieu) est
+          // ignoré sans faire échouer la récupération des autres avis.
+        }
+        objectStart = -1;
+      }
+    } else if (ch === "]" && depth === 0) {
+      break; // Fin normale du tableau — pas une troncature au-delà de ce point.
+    }
+  }
+  return notices;
+}
+
+type GeminiCallResult = { data: unknown; truncated: boolean };
+
+async function callGeminiOnce(pdfBuffer: Buffer, apiKey: string, timeoutMs: number): Promise<GeminiCallResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -318,10 +404,15 @@ async function callGeminiOnce(pdfBuffer: Buffer, apiKey: string, timeoutMs: numb
         // tête de fichier (fait s'arrêter Gemini après un seul élément de
         // tableau). responseMimeType seul suffit à garantir un JSON valide ;
         // le schéma zod ci-dessus absorbe les écarts de Gemini par rapport
-        // au format demandé en texte.
+        // au format demandé en texte. maxOutputTokens au maximum documenté
+        // pour la famille Flash — un quotidien à 70-90+ avis très détaillés
+        // peut sinon atteindre la limite par défaut avant la fin du JSON
+        // (voir tryRecoverPartialNotices, filet de sécurité si ça arrive
+        // malgré tout).
         generationConfig: {
           responseMimeType: "application/json",
           temperature: 0.1,
+          maxOutputTokens: 65536,
         },
       }),
     });
@@ -338,12 +429,25 @@ async function callGeminiOnce(pdfBuffer: Buffer, apiKey: string, timeoutMs: numb
       candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[];
       usageMetadata?: unknown;
     };
+    const finishReason = json.candidates?.[0]?.finishReason;
     if (process.env.DEBUG_GEMINI) {
-      console.error("[gemini] finishReason:", json.candidates?.[0]?.finishReason, "usage:", JSON.stringify(json.usageMetadata));
+      console.error("[gemini] finishReason:", finishReason, "usage:", JSON.stringify(json.usageMetadata));
     }
     const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error(`Réponse Gemini sans contenu (finishReason=${json.candidates?.[0]?.finishReason ?? "?"}).`);
-    return JSON.parse(text);
+    if (!text) throw new Error(`Réponse Gemini sans contenu (finishReason=${finishReason ?? "?"}).`);
+
+    try {
+      const data = JSON.parse(text);
+      // Le JSON peut être syntaxiquement valide tout en étant tronqué (la
+      // coupure est parfois tombée juste après une accolade fermante) — le
+      // finishReason reste le signal fiable même quand JSON.parse réussit.
+      return { data, truncated: finishReason === "MAX_TOKENS" };
+    } catch (parseErr) {
+      const recovered = tryRecoverPartialNotices(text);
+      if (recovered.length === 0) throw parseErr;
+      console.error(`[gemini] Réponse JSON tronquée (finishReason=${finishReason ?? "?"}) — ${recovered.length} avis récupérés malgré la coupure.`);
+      return { data: { notices: recovered }, truncated: true };
+    }
   } finally {
     clearTimeout(timeout);
   }
@@ -357,7 +461,7 @@ async function callGeminiOnce(pdfBuffer: Buffer, apiKey: string, timeoutMs: numb
  * les statuts transitoires (429/50x) uniquement ; les erreurs définitives
  * (401, réponse non conforme...) échouent immédiatement.
  */
-async function callGemini(pdfBuffer: Buffer, options: GeminiCallOptions = {}): Promise<unknown> {
+async function callGemini(pdfBuffer: Buffer, options: GeminiCallOptions = {}): Promise<GeminiCallResult> {
   const apiKey = options.apiKey ?? process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY non configurée.");
   const timeoutMs = options.timeoutMs ?? 280_000;
@@ -381,6 +485,10 @@ export type QuotidienExtraction = {
   notices: GeminiNotice[];
   publicationNumero: string | null;
   publicationDate: Date | null;
+  /** true si la réponse Gemini a été coupée avant la fin (limite de tokens de sortie) — les avis listés sont fiables, mais le document en compte probablement davantage. */
+  truncated: boolean;
+  /** Nombre d'avis renvoyés par Gemini mais rejetés individuellement (forme non conforme) — n'a pas empêché la conservation des autres. */
+  invalidCount: number;
 };
 
 /**
@@ -388,20 +496,40 @@ export type QuotidienExtraction = {
  * et la date du bulletin lui-même (lus sur sa page de garde) — utilisé par
  * le dépôt manuel (section admin/sources) pour se passer d'une saisie
  * humaine de ces deux champs. Lève une erreur en cas d'échec (réseau, quota,
- * réponse non conforme) — à l'appelant de décider du repli (voir
+ * réponse totalement inexploitable) — à l'appelant de décider du repli (voir
  * pipeline.ts : bascule automatique vers segmentAndClassify si cette
  * fonction rejette).
  */
 export async function extractQuotidienWithGemini(pdfBuffer: Buffer, options: GeminiCallOptions = {}): Promise<QuotidienExtraction> {
-  const raw = await callGemini(pdfBuffer, options);
-  const parsed = responseSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error(`Réponse Gemini non conforme au schéma attendu : ${parsed.error.message.slice(0, 500)}`);
+  const { data: raw, truncated } = await callGemini(pdfBuffer, options);
+  const envelope = responseSchema.safeParse(raw);
+  if (!envelope.success) {
+    throw new Error(`Réponse Gemini non conforme au schéma attendu : ${envelope.error.message.slice(0, 500)}`);
   }
+
+  // Chaque avis est validé individuellement plutôt qu'en bloc (voir
+  // commentaire sur responseSchema) : un avis dont la forme est vraiment
+  // inexploitable est ignoré SEUL, sans faire perdre les autres.
+  const notices: GeminiNotice[] = [];
+  let invalidCount = 0;
+  for (const rawNotice of envelope.data.notices) {
+    const parsedNotice = noticeSchema.safeParse(rawNotice);
+    if (!parsedNotice.success) {
+      invalidCount++;
+      continue;
+    }
+    if (parsedNotice.data.title && parsedNotice.data.title.length > 3) notices.push(parsedNotice.data);
+  }
+  if (invalidCount > 0) {
+    console.error(`[gemini] ${invalidCount} avis sur ${envelope.data.notices.length} ignoré(s) individuellement (forme non conforme) — les ${notices.length} autres ont été conservés.`);
+  }
+
   return {
-    notices: parsed.data.notices.filter((n) => n.title && n.title.length > 3),
-    publicationNumero: parsed.data.quotidienNumero,
-    publicationDate: parsed.data.quotidienDate,
+    notices,
+    publicationNumero: envelope.data.quotidienNumero,
+    publicationDate: envelope.data.quotidienDate,
+    truncated,
+    invalidCount,
   };
 }
 

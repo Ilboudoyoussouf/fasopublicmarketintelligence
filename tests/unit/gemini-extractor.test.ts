@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { extractNoticesWithGemini, extractQuotidienWithGemini, isGeminiConfigured } from "@/lib/ingestion/gemini-extractor";
+import { extractNoticesWithGemini, extractQuotidienWithGemini, isGeminiConfigured, reviseNotices } from "@/lib/ingestion/gemini-extractor";
 
 function geminiResponse(text: string, finishReason = "STOP") {
   return {
@@ -187,5 +187,93 @@ describe("gemini-extractor — extractQuotidienWithGemini (numéro/date du bulle
     expect(result.publicationNumero).toBeNull();
     expect(result.publicationDate).toBeNull();
     expect(result.notices).toHaveLength(1);
+  });
+});
+
+describe("gemini-extractor — résilience aux avis mal formés (aucune perte du lot pour la faute d'un seul)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("conserve les avis valides même si d'autres éléments du tableau sont totalement inexploitables", async () => {
+    // Avant la correction, z.array(noticeSchema) rejetait TOUT le tableau dès
+    // qu'un seul élément n'était pas un objet — perdant les avis valides au
+    // passage (le bug remonté : « parfois pas d'aperçu de tous les marchés »).
+    const payload = JSON.stringify({
+      notices: [
+        { isFreshCall: true, publicationType: "DEMANDE_PRIX", authorityType: "AUTRE", title: "Premier marché valide" },
+        null,
+        "élément totalement invalide",
+        { isFreshCall: true, publicationType: "DEMANDE_PRIX", authorityType: "AUTRE", title: "Second marché valide" },
+      ],
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(geminiResponse(payload) as unknown as Response);
+
+    const result = await extractQuotidienWithGemini(Buffer.from("pdf"), { apiKey: "test-key" });
+    expect(result.notices).toHaveLength(2);
+    expect(result.notices.map((n) => n.title)).toEqual(["Premier marché valide", "Second marché valide"]);
+    expect(result.invalidCount).toBe(2);
+  });
+
+  it("absorbe un type inattendu sur un champ numérique/booléen/date sans rejeter l'avis entier", async () => {
+    const payload = JSON.stringify({
+      notices: [
+        {
+          isFreshCall: "oui", // type inattendu (chaîne au lieu de booléen)
+          publicationType: "DEMANDE_PRIX",
+          authorityType: "AUTRE",
+          title: "Marché avec champs partiellement mal formés",
+          amountEstimatedExclTax: true, // type inattendu (booléen au lieu de nombre)
+          submissionDeadline: 20260101, // type inattendu (nombre au lieu de chaîne AAAA-MM-JJ)
+          confidence: {}, // type inattendu (objet)
+        },
+      ],
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(geminiResponse(payload) as unknown as Response);
+
+    const result = await extractQuotidienWithGemini(Buffer.from("pdf"), { apiKey: "test-key" });
+    expect(result.invalidCount).toBe(0);
+    expect(result.notices).toHaveLength(1);
+    expect(result.notices[0].amountEstimatedExclTax).toBeNull();
+    expect(result.notices[0].submissionDeadline).toBeNull();
+    expect(result.notices[0].confidence).toBe(0.7);
+  });
+
+  it("récupère les avis complets d'une réponse tronquée (limite de tokens de sortie atteinte)", async () => {
+    // Réponse coupée en plein milieu du deuxième avis — simule
+    // finishReason=MAX_TOKENS sur un document volumineux.
+    const truncatedText = '{"notices": [' +
+      '{"isFreshCall": true, "publicationType": "DEMANDE_PRIX", "authorityType": "AUTRE", "title": "Avis complet avant la coupure"},' +
+      '{"isFreshCall": true, "publicationType": "DEMANDE_PRIX", "title": "Avis incomplet coupé en pl';
+    vi.mocked(fetch).mockResolvedValueOnce(geminiResponse(truncatedText, "MAX_TOKENS") as unknown as Response);
+
+    const result = await extractQuotidienWithGemini(Buffer.from("pdf"), { apiKey: "test-key" });
+    expect(result.truncated).toBe(true);
+    expect(result.notices).toHaveLength(1);
+    expect(result.notices[0].title).toBe("Avis complet avant la coupure");
+  });
+
+  it("signale une troncature même quand le JSON reste syntaxiquement valide (finishReason=MAX_TOKENS)", async () => {
+    const payload = JSON.stringify({ notices: [{ isFreshCall: true, publicationType: "DEMANDE_PRIX", authorityType: "AUTRE", title: "Avis isolé" }] });
+    vi.mocked(fetch).mockResolvedValueOnce(geminiResponse(payload, "MAX_TOKENS") as unknown as Response);
+
+    const result = await extractQuotidienWithGemini(Buffer.from("pdf"), { apiKey: "test-key" });
+    expect(result.truncated).toBe(true);
+    expect(result.notices).toHaveLength(1);
+  });
+});
+
+describe("gemini-extractor — reviseNotices (aller-retour client avant écriture en base)", () => {
+  it("conserve les avis valides même si l'un d'eux a été altéré côté client", () => {
+    const notices = reviseNotices([
+      { isFreshCall: true, publicationType: "DEMANDE_PRIX", authorityType: "AUTRE", title: "Avis valide" },
+      null,
+      "pas un objet",
+    ]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0].title).toBe("Avis valide");
   });
 });
