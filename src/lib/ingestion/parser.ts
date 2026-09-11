@@ -54,13 +54,18 @@ export type ExtractedNoticeCandidate = {
 // prix…") — confirmé sur le quotidien n°4486, où cela tronquait le bloc dès
 // la première ligne. Les en-têtes eux-mêmes sont systématiquement en
 // capitales, ce qui suffit à les distinguer sans perdre en robustesse.
-// "SYNTHESE DES RESULTATS DE LA DEMANDE DE PRIX N°..." : un tableau de
-// résultats cite le type de procédure d'origine dans son propre en-tête, ce
-// qui ferait sinon démarrer le bloc au mauvais endroit (sur "DEMANDE DE
-// PRIX", en aval de "SYNTHESE DES RESULTATS") — d'où cette alternative
-// placée avant, et le pluriel toléré sur "RESULTAT(S) PROVISOIRE(S)"
-// (confirmé sur le quotidien n°4486 : les deux formes existent).
-const NOTICE_BOUNDARY = /((?:FICHE\s+DE\s+)?SYNTHESE\s+DES\s+R[ÉE]SULTATS|R[ÉE]SULTATS?\s+PROVISOIRES?|AVIS\s+D[’']APPEL\s+D[’']OFFRES|AVIS\s+DE\s+DEMANDE\s+DE\s+PRIX|AVIS\s+DE\s+DEMANDE\s+DE\s+COTATION|AVIS\s+DE\s+MANIFESTATION\s+D[’']INT[ÉE]R[ÊE]T|AVIS\s+DE\s+DEMANDE\s+DE\s+PROPOSITIONS|DEMANDE\s+DE\s+PRIX|DEMANDE\s+DE\s+COTATION|MANIFESTATION\s+D[’']INT[ÉE]R[ÊE]T|DEMANDE\s+DE\s+PROPOSITIONS|AVIS\s+D[’']ATTRIBUTION|RECTIFICATIF|AVIS\s+D[’']ANNULATION)/g;
+// "SYNTHESE DES RESULTATS DE LA DEMANDE DE PRIX N°...", "SYNTHESE AVIS
+// D'APPEL D'OFFRES OUVERT LOCAL N°...", "FICHE DE SYNTHESE RECTIFICATIVE...",
+// "SYNTHESE : Appel d'offres accéléré..." : un tableau de résultats cite le
+// type de procédure d'origine dans son propre en-tête (confirmé sur 4
+// quotidiens réels distincts, sous des formulations très variables) — d'où
+// un déclencheur générique "SYNTHESE" (placé avant, donc prioritaire dès
+// qu'il apparaît), avec retour arrière négatif pour ne pas matcher au
+// milieu d'un mot ("OSTEOSYNTHESE"). Pluriel toléré sur "RESULTAT(S)
+// PROVISOIRE(S)". "APPEL D'OFFRES" sans le préfixe "AVIS" est aussi un
+// en-tête réel valide (ex. "APPEL D'OFFRES OUVERT DIRECT(AOOD)...") — et
+// couvre au passage la coquille source "APPEL D'APPEL D'OFFRES...".
+const NOTICE_BOUNDARY = /((?<![A-ZÀ-Ü])(?:FICHE\s+(?:DE\s+)?)?SYNTHESE|R[ÉE]SULTATS?\s+PROVISOIRES?|AVIS\s+D[’']APPEL\s+D[’']OFFRES|AVIS\s+DE\s+DEMANDE\s+DE\s+PRIX|AVIS\s+DE\s+DEMANDE\s+DE\s+COTATION|AVIS\s+(?:DE|A)\s+MANIFESTATION\s+D[’']INT[ÉE]R[ÊE]T|AVIS\s+DE\s+DEMANDE\s+DE\s+PROPOSITIONS|APPEL\s+D[’']OFFRES|DEMANDE\s+DE\s+PRIX|DEMANDE\s+DE\s+COTATION|MANIFESTATION\s+D[’']INT[ÉE]R[ÊE]T|DEMANDE\s+DE\s+PROPOSITIONS|AVIS\s+D[’']ATTRIBUTION|RECTIFICATIF|AVIS\s+D[’']ANNULL?ATION)/g;
 
 const PROCEDURE_KEYWORDS: [RegExp, string][] = [
   [/appel\s+d[’']offres\s+ouvert\s+acc[ée]l[ée]r[ée]/i, "APPEL_OFFRES_OUVERT_ACCELERE"],
@@ -73,12 +78,14 @@ const PROCEDURE_KEYWORDS: [RegExp, string][] = [
 ];
 
 const PUBLICATION_KEYWORDS: [RegExp, string][] = [
-  [/synthese\s+des\s+r[ée]sultats/i, "RESULTAT_PROVISOIRE"],
+  [/synthese/i, "RESULTAT_PROVISOIRE"],
   [/r[ée]sultats?\s+provisoires?/i, "RESULTAT_PROVISOIRE"],
   [/attribution/i, "ATTRIBUTION"],
-  [/rectificatif/i, "RECTIFICATIF"],
-  [/annulation/i, "ANNULATION"],
-  [/reprise/i, "REPRISE"],
+  [/rectificatif|rectificative/i, "RECTIFICATIF"],
+  [/annull?ation/i, "ANNULATION"],
+  // "reprise" est un vrai mot-clé d'en-tête, mais aussi un simple suffixe
+  // d'« ENTREPRISE » (nom de société, omniprésent) — exclu explicitement.
+  [/(?<!ent)reprise/i, "REPRISE"],
   [/r[ée]examen/i, "REEXAMEN"],
   [/appel\s+d[’']offres/i, "AVIS_APPEL_OFFRES"],
   [/demande\s+de\s+prix/i, "DEMANDE_PRIX"],
@@ -137,6 +144,32 @@ function parseDateMatch(m: RegExpMatchArray | null): Date | null {
 // explicite (VARCHAR(191)) afin qu'une extraction verbeuse ne fasse jamais
 // échouer la création du marché.
 const MAX_TITLE_LENGTH = 190;
+
+// Signatures fiables d'un titre qui n'en est pas un — repérées en comparant
+// les vrais titres de marché (toujours "Acquisition de...", "Travaux de...",
+// "Réalisation de..." : un nom commun avec majuscule initiale) aux fragments
+// produits par un mauvais découpage à l'intérieur d'un tableau de résultats
+// (confirmé sur 4 quotidiens réels distincts — jamais vus sur un vrai titre) :
+//   - reprise mi-phrase, ex. "340) francs CFA..." ou "authentique) BATI..."
+//   - repère de liste numérotée, ex. "17.   Les acquisitions..."
+//   - référence seule, ex. "N°2026-036/MAERAH/SG/PRECEL/SPM du..."
+//   - label vide, ex. "Objet du marché :" (aucune valeur n'a suivi le label)
+//   - minuscule initiale, ex. "lorsque le marché...", "de réservation..."
+// On rejette plutôt que de créer un marché avec un titre manifestement faux
+// — cohérent avec la philosophie du module (jamais de vérité présumée).
+const BAD_TITLE_PATTERNS = [
+  /^\d+[).]/, // "340)..." / "17. Les acquisitions..."
+  /^n[°o]\s*\d/i, // "N°2026-036/..."
+  /^objets?\s+du\s+march[ée]\s*:?\s*$/i,
+  /^objet\s*:?\s*$/i,
+  /^[a-zàâäéèêëîïôöùûüç]/, // minuscule initiale : toujours une reprise mi-phrase dans le corpus observé
+];
+
+function cleanTitle(title: string | null): string | null {
+  if (!title) return null;
+  const trimmed = title.trim();
+  return BAD_TITLE_PATTERNS.some((p) => p.test(trimmed)) ? null : title;
+}
 
 function guessTitle(block: string): string | null {
   // Le titre suit généralement le motif d'objet : "objet : ..." ou la
@@ -373,7 +406,7 @@ export function segmentAndClassify(fullText: string): ExtractedNoticeCandidate[]
       publicationTypeGuess: publicationEntry?.[1] ?? "AVIS_APPEL_OFFRES",
       procedureTypeGuess: procedureEntry?.[1] ?? null,
       reference,
-      title: preamble.title ?? guessTitle(block),
+      title: cleanTitle(preamble.title ?? guessTitle(block)),
       authorityGuess: preamble.authority ? cleanAuthority(preamble.authority) : authorityMatch?.[1] ? cleanAuthority(authorityMatch[1]) : null,
       amountExclTax: amountMatch ? parseAmount(amountMatch[1]) : null,
       submissionDeadline: parseDateMatch(deadlineMatch),

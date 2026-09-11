@@ -117,6 +117,16 @@ export async function discoverSource(sourceId: string) {
 // publié dans un quotidien antérieur à ceux déjà ingérés), il ne faut
 // jamais en fabriquer un nouveau — cela créerait une fausse opportunité à
 // partir d'un contenu qui n'en est pas une.
+// Le formalisme des quotidiens DGCMEF varie énormément d'un organisme à
+// l'autre (confirmé sur 4 quotidiens réels distincts) : une part du corps
+// heuristique (parser.ts) capte correctement les champs présents sans que
+// cela garantisse la justesse sémantique du titre (fragments de tableaux de
+// résultats mal bornés). Le seuil d'auto-approbation est donc volontairement
+// élevé — priorité donnée à « vraies données vérifiables » sur
+// l'automatisation : en dessous, la fiche part en validation humaine
+// (section 45) plutôt que de s'afficher comme fiable sans l'être.
+const AUTO_APPROVE_CONFIDENCE_THRESHOLD = 0.8;
+
 const FRESH_CALL_TYPES = new Set<string>([
   "AVIS_APPEL_OFFRES", "DEMANDE_PRIX", "DEMANDE_COTATION", "APPEL_OFFRES_OUVERT",
   "APPEL_OFFRES_ACCELERE", "MANIFESTATION_INTERET", "DEMANDE_PROPOSITIONS",
@@ -297,7 +307,7 @@ async function processDocumentBuffer(documentId: string, buffer: Buffer) {
         await prisma.dataQualityCheck.create({
           data: {
             entityType: "Market", entityId: market.id, field,
-            status: candidate.confidence >= 0.6 ? DataQualityStatus.EXTRAIT_AUTOMATIQUEMENT : DataQualityStatus.INCERTAIN,
+            status: candidate.confidence >= AUTO_APPROVE_CONFIDENCE_THRESHOLD ? DataQualityStatus.EXTRAIT_AUTOMATIQUEMENT : DataQualityStatus.INCERTAIN,
             confidence: confidence ? candidate.confidence : 0.2,
             extractionMethod: "regex-heuristic",
           },
@@ -308,7 +318,7 @@ async function processDocumentBuffer(documentId: string, buffer: Buffer) {
   });
 
   await runJob(documentId, ExtractionJobStage.VALIDATE, async () => {
-    const lowConfidence = candidates.some((c) => c.confidence < 0.6);
+    const lowConfidence = candidates.some((c) => c.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD);
     await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: lowConfidence ? "EXTRACTED" : "VALIDATED" } });
   });
 

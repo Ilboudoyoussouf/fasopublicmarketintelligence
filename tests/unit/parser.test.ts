@@ -166,3 +166,115 @@ Financement : ADCT-Budget Communal, gestion 2026
     expect(types).toContain("CONDITIONS_RESERVATION");
   });
 });
+
+// Cas confirmés en comparant 4 quotidiens DGCMEF réels distincts (n°4483 à
+// n°4486) : un tableau de résultats/synthèse cite le type de procédure
+// d'origine dans son propre en-tête ("SYNTHESE AVIS D'APPEL D'OFFRES...",
+// "SYNTHESE DES RESULTATS DE LA DEMANDE DE PRIX...") — sans traitement
+// dédié, ce texte redevient à tort un nouvel avis frais.
+describe("segmentAndClassify — tableaux de résultats/synthèse (jamais un nouvel avis)", () => {
+  it("classe un en-tête « SYNTHESE ... » générique comme un résultat, pas un nouvel appel", () => {
+    const sample = `
+COMMUNE DE PAMA
+
+Travaux de réhabilitation du marché central de Pama
+AVIS DE DEMANDE DE PRIX
+N°2026-099/RSHL/PKPO/CPAM/SG/PRCP
+
+1. Le montant prévisionnel est de dix millions (10 000 000) francs CFA.
+Date limite de dépôt des offres : 12/10/2026.
+
+PROJET D'APPUI AU DEVELOPPEMENT LOCAL
+                              SYNTHESE AVIS D'APPEL D'OFFRES OUVERT LOCAL N°2026-04/CO/M/CAB/PAGO
+
+Acquisition d'équipements en appui aux mairies dans le cadre de la mise en œuvre des ODD
+Publication : Quotidien des marchés Publics N° 4375 - Jeudi 09 avril 2026
+Date de délibération : 04/09/2026
+Attributaire : ETS SODRE ET FILS pour un montant de quatre-vingt millions (80 000 000) francs CFA TTC.
+`;
+    const candidates = segmentAndClassify(sample);
+    const synthese = candidates.find((c) => c.rawBlock.startsWith("SYNTHESE"));
+    expect(synthese).toBeDefined();
+    expect(synthese?.publicationTypeGuess).toBe("RESULTAT_PROVISOIRE");
+  });
+
+  it("détecte un « APPEL D'OFFRES » sans le préfixe AVIS comme un avis à part entière", () => {
+    const sample = `
+CAISSE AUTONOME DE RETRAITE DES FONCTIONNAIRES
+
+Acquisition et installation de quatre groupes électrogènes au profit de la CARFO
+APPEL D'OFFRES OUVERT DIRECT(AOOD) 2026-003/CARFO/DG/DMP
+Date limite de dépôt des offres : 30/09/2026.
+`;
+    const [candidate] = segmentAndClassify(sample);
+    expect(candidate.title).toContain("Acquisition et installation");
+    expect(candidate.authorityGuess).toBe("CAISSE AUTONOME DE RETRAITE DES FONCTIONNAIRES");
+  });
+
+  it("tolère la coquille « ANNULLATION » (double L) présente dans les quotidiens réels", () => {
+    const sample = `
+COMMUNE DE LIPTOUGOU
+
+AVIS D'ANNULLATION DE LA MANIFESTATION D'INTERET
+N°2026-01/REST/PGNG/CLPTG/PRM
+`;
+    const [candidate] = segmentAndClassify(sample);
+    expect(candidate.publicationTypeGuess).toBe("ANNULATION");
+  });
+
+  it("ne classe pas une mention incidente d'« ENTREPRISE » comme une reprise de procédure", () => {
+    const sample = `
+COMMUNE DE BOROMO
+
+Travaux de construction de hangars complémentaires au marché de Boromo
+AVIS DE DEMANDE DE PRIX
+N°2026-03/RBM/PBL/CBRM/PRCP
+
+Attributaire : ENTREPRISE DE CONSTRUCTION ZOUNGRANA ET FRERES pour un montant de dix millions (10 000 000) francs CFA.
+Date limite de dépôt des offres : 15/10/2026.
+`;
+    const [candidate] = segmentAndClassify(sample);
+    expect(candidate.publicationTypeGuess).toBe("DEMANDE_PRIX");
+  });
+});
+
+// Un mauvais découpage de bloc (à l'intérieur d'un tableau de résultats, par
+// exemple) produit parfois un « titre » qui n'en est pas un : un repère de
+// liste numérotée, une référence seule, un label vide, ou une reprise en
+// minuscules mi-phrase. Confirmé sur les 4 quotidiens réels : jamais observé
+// sur un vrai titre de marché.
+describe("segmentAndClassify — rejette les titres qui ne sont pas de vrais titres", () => {
+  const casesRejected: [string, string][] = [
+    ["repère de liste numérotée", "17.   Les acquisitions se décomposent en deux (02) lots répartis comme suit"],
+    ["référence seule", "N°2026-036/MAERAH/SG/PRECEL/SPM du 07 Septembre 2026"],
+    ["label « Objet du marché : » vide", "Objet du marché :"],
+    ["reprise mi-phrase en minuscules", "lorsque le marché n'est pas réservé) (SANS OBJET)"],
+    ["fragment de montant tronqué", "340) francs CFA HT avec un délai d'exécution de quatre-vingt-dix (90) jours."],
+  ];
+
+  for (const [label, badTitle] of casesRejected) {
+    it(`rejette un titre "${label}"`, () => {
+      const sample = `
+COMMUNE DE TEST
+
+${badTitle}
+AVIS DE DEMANDE DE PRIX
+N°2026-00X/TEST
+`;
+      const [candidate] = segmentAndClassify(sample);
+      expect(candidate.title).toBeNull();
+    });
+  }
+
+  it("garde un vrai titre commençant par une majuscule", () => {
+    const sample = `
+COMMUNE DE TEST
+
+Acquisition de matériel informatique au profit de la mairie de Test
+AVIS DE DEMANDE DE PRIX
+N°2026-00X/TEST
+`;
+    const [candidate] = segmentAndClassify(sample);
+    expect(candidate.title).toBe("Acquisition de matériel informatique au profit de la mairie de Test");
+  });
+});
