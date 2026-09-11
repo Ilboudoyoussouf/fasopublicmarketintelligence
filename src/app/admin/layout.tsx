@@ -9,22 +9,22 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   await requirePlatformAdmin();
 
   return (
-    <div className="flex min-h-screen">
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-line bg-paper lg:flex">
-        <div className="flex h-14 items-center gap-2 border-b border-line px-4">
+    <div className="flex h-screen overflow-hidden">
+      <aside className="hidden h-full min-h-0 w-60 shrink-0 flex-col overflow-hidden border-r border-line bg-paper lg:flex">
+        <div className="flex h-14 shrink-0 items-center gap-2 border-b border-line px-4">
           <ShieldCheck className="h-5 w-5 text-brand" />
           <span className="text-sm font-semibold text-ink">Administration</span>
         </div>
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
           {ADMIN_NAV.map((item) => <AdminNavLink key={item.href} href={item.href} label={item.label} />)}
         </nav>
-        <div className="border-t border-line p-3">
+        <div className="shrink-0 border-t border-line p-3">
           <Link href="/dashboard" className="text-xs text-ink-muted hover:text-brand">← Retour à l&apos;application</Link>
         </div>
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <AdminMobileNav />
-        <main className="flex-1 px-4 py-5 lg:px-6">{children}</main>
+        <main className="flex-1 overflow-y-auto px-4 py-5 lg:px-6">{children}</main>
       </div>
     </div>
   );

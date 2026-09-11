@@ -13,8 +13,8 @@ export function Sidebar({ isPlatformAdmin }: { isPlatformAdmin: boolean }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   return (
-    <aside className="hidden w-64 shrink-0 flex-col border-r border-line bg-bg-secondary lg:flex">
-      <div className="flex h-14 items-center gap-2 border-b border-line px-4">
+    <aside className="hidden h-full min-h-0 w-64 shrink-0 flex-col overflow-hidden border-r border-line bg-bg-secondary lg:flex">
+      <div className="flex h-14 shrink-0 items-center gap-2 border-b border-line px-4">
         <div className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] bg-brand text-xs font-bold text-white">FP</div>
         <span className="text-sm font-semibold text-ink">FASO Market Intel</span>
       </div>
