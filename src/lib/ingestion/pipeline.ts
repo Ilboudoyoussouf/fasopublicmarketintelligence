@@ -13,6 +13,7 @@ import {
   ExtractionJobStage, ExtractionJobStatus, DataQualityStatus,
   PublicationKind, MarketStatus, ProcedureType, PublicationType,
   RequirementType, RequiredDocType, OrganizationType, SectorGroup,
+  Prisma,
 } from "@prisma/client";
 
 function getConnectorFor(sourceName: string, baseUrl: string): SourceConnector {
@@ -808,13 +809,130 @@ async function reconcilePublicationMetadata(
   }
 }
 
-// Dépôt manuel avec aperçu avant validation (même principe que
-// discoverAndAnalyzeSource/commitAnalyzedDocument, mais pour un fichier
-// déposé à la main plutôt que découvert sur une source) : le document est
-// créé et le fichier stocké, puis extrait avec Gemini SANS rien écrire en
-// base — l'ajout effectif passe par commitAnalyzedDocument(), qui réutilise
-// exactement la même fonction d'écriture que tous les autres chemins
-// d'ingestion (processGeminiNotices).
+// L'extraction Gemini d'un quotidien volumineux peut prendre plusieurs
+// minutes (voir MAX_ATTEMPTS/retries dans gemini-extractor.ts) — largement
+// au-delà de ce que tolère le proxy inverse placé devant l'hébergement
+// Node.js (constaté en conditions réelles : la requête HTTP expire côté
+// proxy avant que Gemini ne réponde, et le navigateur reçoit une erreur
+// générique — « An unexpected response was received from the server » —
+// alors que l'extraction continue de tourner côté serveur). La solution
+// n'est PAS de rallonger un délai qu'on ne contrôle pas (ce proxy n'est pas
+// configurable depuis le code de l'application), mais de ne plus jamais
+// garder une requête ouverte pendant toute la durée de l'extraction :
+// celle-ci est lancée ici SANS être attendue (le process Node.js de cet
+// hébergement est persistant, contrairement à une fonction serverless — la
+// promesse continue de s'exécuter après que la réponse HTTP est partie), et
+// le résultat est écrit dans Document.pendingAnalysis dès qu'il est prêt.
+// Le client le récupère par polling (getAnalysisStatus), via de courtes
+// requêtes qui, elles, n'ont aucune chance d'expirer.
+function runAnalysisInBackground(
+  documentId: string,
+  buffer: Buffer,
+  reconcile?: { provisionalPublication: { id: string; sourceId: string }; provisionalNumero: string; provisionalDate: Date },
+): void {
+  (async () => {
+    if (!isGeminiConfigured()) {
+      await prisma.document.update({ where: { id: documentId }, data: { pendingAnalysis: { status: "gemini_not_configured" } } });
+      return;
+    }
+    try {
+      const extraction = await runJob(documentId, ExtractionJobStage.CLASSIFY, async () => {
+        const result = await extractQuotidienWithGemini(buffer);
+        await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "CLASSIFIED" } });
+        return result;
+      });
+
+      let publicationNumero: string | undefined;
+      let publishedAt: Date | undefined;
+      if (reconcile) {
+        publicationNumero = extraction.publicationNumero ?? reconcile.provisionalNumero;
+        publishedAt = extraction.publicationDate ?? reconcile.provisionalDate;
+        await reconcilePublicationMetadata({ id: documentId }, reconcile.provisionalPublication, reconcile.provisionalNumero, publicationNumero, publishedAt);
+      }
+
+      await prisma.document.update({
+        where: { id: documentId },
+        data: {
+          pendingAnalysis: {
+            status: "ok",
+            notices: extraction.notices,
+            truncated: extraction.truncated,
+            invalidCount: extraction.invalidCount,
+            ...(publicationNumero && publishedAt ? { publicationNumero, publishedAt: publishedAt.toISOString() } : {}),
+          },
+        },
+      });
+    } catch (err) {
+      await prisma.document.update({
+        where: { id: documentId },
+        data: {
+          extractionStatus: "FAILED",
+          pendingAnalysis: { status: "extraction_failed", error: (err instanceof Error ? err.message : String(err)).slice(0, 1900) },
+        },
+      });
+    }
+  })().catch((err) => {
+    // Filet de sécurité ultime : si même l'écriture de l'échec en base a
+    // échoué (ex. perte de connexion DB), au moins le journaliser plutôt
+    // que de laisser une promesse rejetée sans gestion.
+    console.error(`[ingestion] Échec de l'analyse en arrière-plan du document ${documentId} :`, err);
+  });
+}
+
+type CommittedResult = {
+  extractionMethod: "gemini" | "regex-heuristic";
+  candidatesFound: number;
+  createdMarkets: number;
+  updatedMarkets: number;
+  republishedBlocks?: number;
+  skippedUnmatchedUpdates: number;
+};
+
+type StoredAnalysis =
+  | { status: "ok"; notices: unknown[]; truncated: boolean; invalidCount: number; publicationNumero?: string; publishedAt?: string }
+  | { status: "gemini_not_configured" }
+  | { status: "extraction_failed"; error: string }
+  // Résultat du repli "import sans aperçu" (ingestExistingDocument) — écrit
+  // directement en base, donc pas d'avis à valider ; juste le résultat final.
+  | ({ status: "committed" } & CommittedResult);
+
+export type AnalysisStatus =
+  | { status: "processing" }
+  | { status: "ok"; notices: GeminiNotice[]; truncated: boolean; invalidCount: number; publicationNumero?: string; publishedAt?: Date }
+  | { status: "gemini_not_configured" }
+  | { status: "extraction_failed"; error: string }
+  | ({ status: "committed" } & CommittedResult);
+
+/** Lu par polling côté client pendant qu'une analyse lancée en arrière-plan est en cours. */
+export async function getAnalysisStatus(documentId: string): Promise<AnalysisStatus> {
+  const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, select: { pendingAnalysis: true } });
+  if (!document.pendingAnalysis) return { status: "processing" };
+
+  const stored = document.pendingAnalysis as StoredAnalysis;
+  if (stored.status !== "ok") return stored;
+
+  return {
+    status: "ok",
+    // Revalidé (jamais fait confiance aveuglément à un JSON stocké) — les
+    // dates y survivent en chaînes ISO après l'aller-retour par la colonne
+    // Json ; reviseNotices() les reconvertit comme pour tout avis Gemini.
+    notices: reviseNotices(stored.notices),
+    truncated: stored.truncated,
+    invalidCount: stored.invalidCount,
+    publicationNumero: stored.publicationNumero,
+    publishedAt: stored.publishedAt ? new Date(stored.publishedAt) : undefined,
+  };
+}
+
+// Dépôt manuel (même principe que discoverAndAnalyzeSource/
+// commitAnalyzedDocument, mais pour un fichier déposé à la main plutôt que
+// découvert sur une source) : le document est créé et le fichier stocké,
+// puis l'extraction Gemini est lancée EN ARRIÈRE-PLAN (voir
+// runAnalysisInBackground) — cette fonction répond dès que le document
+// existe, sans attendre l'extraction. Le client suit sa progression par
+// polling (getAnalysisStatus) puis valide via commitAnalyzedDocument(), qui
+// réutilise exactement la même fonction d'écriture que tous les autres
+// chemins d'ingestion (processGeminiNotices).
 //
 // Ni le numéro du quotidien ni sa date de publication ne sont demandés à
 // l'utilisateur : une valeur provisoire (déduite du nom de fichier / date du
@@ -824,7 +942,7 @@ export async function analyzeUploadedPdf(params: {
   sourceId: string;
   filename: string;
   buffer: Buffer;
-}): Promise<DocumentAnalysis & { documentId: string; publicationNumero: string; publishedAt: Date }> {
+}): Promise<{ documentId: string; publicationNumero: string; publishedAt: Date }> {
   const provisionalNumero = guessNumeroFromFilename(params.filename);
   const provisionalDate = new Date();
   const { document, publication } = await createUploadedDocument({
@@ -835,41 +953,42 @@ export async function analyzeUploadedPdf(params: {
     publishedAt: provisionalDate,
   });
 
-  if (!isGeminiConfigured()) {
-    return { documentId: document.id, status: "gemini_not_configured", publicationNumero: provisionalNumero, publishedAt: provisionalDate };
-  }
+  runAnalysisInBackground(document.id, params.buffer, { provisionalPublication: publication, provisionalNumero, provisionalDate });
 
-  try {
-    const extraction = await runJob(document.id, ExtractionJobStage.CLASSIFY, async () => {
-      const result = await extractQuotidienWithGemini(params.buffer);
-      await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "CLASSIFIED" } });
-      return result;
-    });
-
-    const finalNumero = extraction.publicationNumero ?? provisionalNumero;
-    const finalDate = extraction.publicationDate ?? provisionalDate;
-    await reconcilePublicationMetadata(document, publication, provisionalNumero, finalNumero, finalDate);
-
-    return { documentId: document.id, status: "ok", notices: extraction.notices, truncated: extraction.truncated, invalidCount: extraction.invalidCount, publicationNumero: finalNumero, publishedAt: finalDate };
-  } catch (err) {
-    await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "FAILED" } });
-    return {
-      documentId: document.id,
-      status: "extraction_failed",
-      error: err instanceof Error ? err.message : String(err),
-      publicationNumero: provisionalNumero,
-      publishedAt: provisionalDate,
-    };
-  }
+  return { documentId: document.id, publicationNumero: provisionalNumero, publishedAt: provisionalDate };
 }
 
 // Repli sans aperçu pour un document déjà créé par analyzeUploadedPdf() —
 // utilisé quand l'aperçu Gemini a échoué (clé absente, quota, réponse non
 // conforme) : réutilise le même document (jamais de doublon) et retombe sur
 // le passage complet (Gemini si possible, sinon le parseur par règles), qui
-// écrit directement en base comme le ferait le robot automatique.
-export async function ingestExistingDocument(documentId: string, buffer: Buffer) {
-  return processDocumentBuffer(documentId, buffer);
+// écrit directement en base comme le ferait le robot automatique. Lancé EN
+// ARRIÈRE-PLAN comme le reste de ce fichier (même raison : ce passage peut
+// prendre plusieurs minutes, bien au-delà de ce que tolère le proxy inverse
+// devant l'hébergement) — le client suit la progression par polling
+// (getAnalysisStatus).
+export function ingestExistingDocument(documentId: string, buffer: Buffer): void {
+  (async () => {
+    try {
+      const result = await processDocumentBuffer(documentId, buffer);
+      if (result.status === "extraction_failed") {
+        await prisma.document.update({
+          where: { id: documentId },
+          data: { pendingAnalysis: { status: "extraction_failed", error: "Extraction de texte impossible (PDF illisible et OCR indisponible)." } },
+        });
+        return;
+      }
+      const { status: _status, ...committed } = result;
+      await prisma.document.update({ where: { id: documentId }, data: { pendingAnalysis: { status: "committed", ...committed } } });
+    } catch (err) {
+      await prisma.document.update({
+        where: { id: documentId },
+        data: { pendingAnalysis: { status: "extraction_failed", error: (err instanceof Error ? err.message : String(err)).slice(0, 1900) } },
+      });
+    }
+  })().catch((err) => {
+    console.error(`[ingestion] Échec de l'import de repli en arrière-plan du document ${documentId} :`, err);
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -882,20 +1001,14 @@ export async function ingestExistingDocument(documentId: string, buffer: Buffer)
 // robot automatique : aucune divergence possible entre les deux chemins.
 // ---------------------------------------------------------------------
 
-export type DocumentAnalysis =
-  // truncated=true : la réponse Gemini a été coupée avant la fin (limite de
-  // tokens de sortie du modèle, fréquent sur un quotidien à 70-90+ avis très
-  // détaillés) — les avis listés restent fiables, mais le document en
-  // contient probablement d'autres au-delà de la coupure. L'admin le voit
-  // dans l'aperçu et peut relancer l'analyse plutôt que de croire, à tort,
-  // avoir la liste complète.
-  | { status: "ok"; notices: GeminiNotice[]; truncated: boolean; invalidCount: number }
-  | { status: "gemini_not_configured" }
-  | { status: "download_failed" }
-  | { status: "extraction_failed"; error: string };
-
-/** Télécharge un document déjà découvert et l'analyse avec Gemini, sans créer aucun marché. */
-export async function analyzeDocument(documentId: string): Promise<DocumentAnalysis> {
+/**
+ * Télécharge un document déjà découvert (rapide — seul le PDF est
+ * récupéré) puis lance son analyse Gemini EN ARRIÈRE-PLAN (voir
+ * runAnalysisInBackground : jamais de requête HTTP tenue ouverte pendant
+ * les quelques minutes qu'une extraction peut prendre), sans créer aucun
+ * marché. Le client suit la progression par polling (getAnalysisStatus).
+ */
+async function startDocumentAnalysis(documentId: string): Promise<{ status: "processing" } | { status: "download_failed" }> {
   const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, include: { publication: { include: { source: true } } } });
   const connector = getConnectorFor(document.publication.source.name, document.publication.source.baseUrl);
 
@@ -912,29 +1025,18 @@ export async function analyzeDocument(documentId: string): Promise<DocumentAnaly
     return { status: "download_failed" };
   }
 
-  if (!isGeminiConfigured()) return { status: "gemini_not_configured" };
-
-  try {
-    const extraction = await runJob(documentId, ExtractionJobStage.CLASSIFY, async () => {
-      const result = await extractQuotidienWithGemini(buffer);
-      await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "CLASSIFIED" } });
-      return result;
-    });
-    return { status: "ok", notices: extraction.notices, truncated: extraction.truncated, invalidCount: extraction.invalidCount };
-  } catch (err) {
-    await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "FAILED" } });
-    return { status: "extraction_failed", error: err instanceof Error ? err.message : String(err) };
-  }
+  runAnalysisInBackground(documentId, buffer);
+  return { status: "processing" };
 }
 
-/** Découvre les nouveaux documents d'une source puis les analyse avec Gemini (sans écrire de marché). */
+/** Découvre les nouveaux documents d'une source puis lance leur analyse Gemini en arrière-plan (sans écrire de marché). */
 export async function discoverAndAnalyzeSource(sourceId: string) {
   const { documentIds, ...discoverStats } = await discoverSource(sourceId);
 
-  const analyses: (DocumentAnalysis & { documentId: string; filename: string; publicationNumero: string; publishedAt: Date })[] = [];
+  const analyses: { documentId: string; filename: string; publicationNumero: string; publishedAt: Date; status: "processing" | "download_failed" }[] = [];
   for (const documentId of documentIds) {
     const document = await prisma.document.findUniqueOrThrow({ where: { id: documentId }, include: { publication: true } });
-    const analysis = await analyzeDocument(documentId);
+    const analysis = await startDocumentAnalysis(documentId);
     analyses.push({ documentId, filename: document.filename, publicationNumero: document.publication.numero, publishedAt: document.publication.publishedAt, ...analysis });
   }
   return { ...discoverStats, analyses };
@@ -948,7 +1050,10 @@ export async function commitAnalyzedDocument(documentId: string, notices: unknow
   const result = await runJob(documentId, ExtractionJobStage.EXTRACT, () => processGeminiNotices(revised, document, documentId));
   await runJob(documentId, ExtractionJobStage.VALIDATE, async () => {
     const lowConfidence = revised.some((n) => n.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD);
-    await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: lowConfidence ? "EXTRACTED" : "VALIDATED" } });
+    // pendingAnalysis n'a plus lieu d'être conservé une fois validé — sans
+    // ça, une relecture de ce document (getAnalysisStatus) après coup
+    // réafficherait un aperçu obsolète comme s'il restait à valider.
+    await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: lowConfidence ? "EXTRACTED" : "VALIDATED", pendingAnalysis: Prisma.JsonNull } });
   });
 
   return { status: "ok" as const, candidatesFound: revised.length, ...result };

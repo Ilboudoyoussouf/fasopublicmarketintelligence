@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requirePlatformAdmin } from "@/lib/session";
 import { revalidatePath } from "next/cache";
 import { DataQualityStatus } from "@prisma/client";
-import { runFullIngestion, discoverAndAnalyzeSource, commitAnalyzedDocument, analyzeUploadedPdf, ingestExistingDocument } from "@/lib/ingestion/pipeline";
+import { runFullIngestion, discoverAndAnalyzeSource, commitAnalyzedDocument, analyzeUploadedPdf, ingestExistingDocument, getAnalysisStatus } from "@/lib/ingestion/pipeline";
 import { clearDemoMarkets } from "@/lib/admin/clear-demo-data";
 
 export async function clearDemoDataAction() {
@@ -70,19 +70,42 @@ export async function analyzeUploadedPdfAction(formData: FormData) {
 // Repli sans aperçu pour un document déjà créé par analyzeUploadedPdfAction
 // (aperçu Gemini indisponible) — réutilise le même document et retombe sur
 // le passage complet (Gemini si possible, sinon le parseur par règles), qui
-// écrit directement en base.
+// écrit directement en base. Lancé en arrière-plan (voir ingestExistingDocument) :
+// cette action répond dès que le traitement est engagé, sans l'attendre — le
+// client suit la progression par polling (getAnalysisStatusAction).
 export async function ingestExistingDocumentAction(documentId: string, file: File) {
   await requirePlatformAdmin();
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await ingestExistingDocument(documentId, buffer);
-    revalidatePath("/marches");
-    revalidatePath("/dashboard");
-    revalidatePath("/opportunites");
-    revalidatePath("/admin/sources");
-    revalidatePath("/admin/importations");
-    revalidatePath("/admin/jobs");
-    revalidatePath("/admin/validation");
+    ingestExistingDocument(documentId, buffer);
+    return { ok: true as const, documentId };
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Suivi par polling d'une analyse ou d'un import lancé en arrière-plan —
+// aucune requête n'est jamais tenue ouverte le temps que Gemini réponde
+// (constaté en conditions réelles : sur l'hébergement Node.js de production,
+// le proxy inverse expire bien avant qu'un document volumineux ne soit
+// traité, renvoyant une erreur générique côté navigateur alors que le
+// traitement continue de tourner côté serveur) — chaque appel ici est rapide
+// quel que soit l'état de l'analyse suivie.
+export async function getAnalysisStatusAction(documentId: string) {
+  await requirePlatformAdmin();
+  try {
+    const result = await getAnalysisStatus(documentId);
+    if (result.status !== "processing") {
+      revalidatePath("/admin/sources");
+      revalidatePath("/admin/importations");
+      revalidatePath("/admin/jobs");
+    }
+    if (result.status === "committed") {
+      revalidatePath("/marches");
+      revalidatePath("/dashboard");
+      revalidatePath("/opportunites");
+      revalidatePath("/admin/validation");
+    }
     return { ok: true as const, ...result };
   } catch (err) {
     return { ok: false as const, error: err instanceof Error ? err.message : String(err) };

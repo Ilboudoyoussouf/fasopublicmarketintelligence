@@ -142,6 +142,19 @@ model Document {
   downloadedAt     DateTime?
   createdAt        DateTime         @default(now())
 
+  // Résultat d'une extraction Gemini menée en arrière-plan, en attente de
+  // validation humaine (aperçu avant ajout, section admin/sources) —
+  // {status: "ok", notices, truncated, invalidCount, publicationNumero,
+  // publishedAt} | {status: "gemini_not_configured"} | {status:
+  // "extraction_failed", error}. Effacé (remis à null) dès que l'admin
+  // valide (commitAnalyzedDocument) ou relance une analyse. Existe car
+  // l'extraction est lancée sans être attendue par la requête HTTP qui l'a
+  // déclenchée (peut prendre plusieurs minutes sur un gros document — bien
+  // au-delà de ce que tolère le proxy inverse devant l'hébergement) : le
+  // client récupère le résultat par des requêtes courtes (polling) plutôt
+  // que de garder une requête ouverte tout ce temps.
+  pendingAnalysis Json?
+
   pages               DocumentPage[]
   extractionJobs      ExtractionJob[]
   notices             Notice[]
