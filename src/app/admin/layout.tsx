@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ADMIN_NAV } from "@/lib/nav";
 import { ShieldCheck } from "lucide-react";
 import { AdminNavLink } from "@/components/domain/AdminNavLink";
+import { AdminMobileNav } from "@/components/nav/AdminMobileNav";
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   await requirePlatformAdmin();
@@ -21,7 +22,10 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <Link href="/dashboard" className="text-xs text-ink-muted hover:text-brand">← Retour à l&apos;application</Link>
         </div>
       </aside>
-      <main className="flex-1 px-4 py-5 lg:px-6">{children}</main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <AdminMobileNav />
+        <main className="flex-1 px-4 py-5 lg:px-6">{children}</main>
+      </div>
     </div>
   );
 }

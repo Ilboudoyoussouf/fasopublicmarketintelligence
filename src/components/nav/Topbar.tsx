@@ -26,9 +26,10 @@ export function Topbar({
   const activeTenant = tenants.find((t) => t.id === activeTenantId);
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-line bg-paper px-4">
+    <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-line bg-paper px-3 sm:gap-3 sm:px-4">
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-brand text-xs font-bold text-white lg:hidden">FP</div>
       <form
-        className="relative flex-1 max-w-xl"
+        className="relative min-w-0 flex-1 max-w-xl"
         onSubmit={(e) => {
           e.preventDefault();
           const q = new FormData(e.currentTarget).get("q");

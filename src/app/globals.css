@@ -109,12 +109,18 @@
   --font-mono: var(--font-jetbrains-mono);
 }
 
+html {
+  overflow-x: hidden;
+}
+
 body {
   background: var(--bg-primary);
   color: var(--ink);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
   font-size: 14px;
   line-height: 1.5;
+  overflow-x: hidden;
+  min-width: 320px;
 }
 
 * {

@@ -13,7 +13,7 @@ export default async function AdminSourcesPage() {
     <div className="space-y-4">
       <h1 className="text-lg font-semibold text-ink">Sources</h1>
       <Card>
-        <CardBody className="flex items-center justify-between gap-4">
+        <CardBody className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <div>
             <p className="text-sm font-medium text-ink">Données de démonstration</p>
             <p className="text-xs text-ink-muted">Retire les marchés fictifs du jeu de données initial (Annexe D) sans toucher aux marchés réellement ingérés depuis DGCMEF.</p>
@@ -24,12 +24,12 @@ export default async function AdminSourcesPage() {
       <div className="space-y-2">
         {sources.map((s) => (
           <Card key={s.id}><CardBody>
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
                 <p className="text-sm font-medium text-ink">{s.name}</p>
-                <p className="text-xs text-ink-muted">{s.baseUrl} · {s._count.publications} publication(s) · dernier passage {formatDateTime(s.lastCrawledAt)}</p>
+                <p className="text-xs text-ink-muted break-words">{s.baseUrl} · {s._count.publications} publication(s) · dernier passage {formatDateTime(s.lastCrawledAt)}</p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto">
                 <Badge tone={s.isActive ? "success" : "neutral"}>{s.isActive ? "Actif" : "Inactif"}</Badge>
                 <form action={toggleSourceActiveAction.bind(null, s.id)}>
                   <button type="submit" className="text-xs text-brand hover:underline">{s.isActive ? "Désactiver" : "Activer"}</button>

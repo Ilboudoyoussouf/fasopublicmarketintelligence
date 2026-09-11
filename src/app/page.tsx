@@ -106,9 +106,9 @@ export default async function LandingPage() {
                   { m: "Travaux de réhabilitation", s: "BTP", v: "185 M FCFA", e: "24 j" },
                   { m: "Fournitures médicales", s: "Santé", v: "76 M FCFA", e: "31 j" },
                 ].map((r) => (
-                  <div key={r.m} className="flex items-center justify-between text-xs">
+                  <div key={r.m} className="flex items-center justify-between gap-2 text-xs">
                     <span className="min-w-0 truncate text-ink">{r.m}</span>
-                    <span className="shrink-0 text-ink-faint">{r.s}</span>
+                    <span className="hidden shrink-0 text-ink-faint sm:inline">{r.s}</span>
                     <span className="num shrink-0 font-medium text-ink">{r.v}</span>
                     <span className="num shrink-0 text-warning">{r.e}</span>
                   </div>
@@ -294,8 +294,8 @@ export default async function LandingPage() {
         <h2 className="text-center text-2xl font-bold text-ink">Ce que vous gagnez</h2>
         <div className="mt-8 overflow-hidden rounded-[var(--radius-lg)] border border-line">
           <div className="grid grid-cols-2 divide-x divide-line">
-            <div className="bg-paper p-4"><p className="text-xs font-semibold text-ink-faint uppercase">Sans la plateforme</p></div>
-            <div className="bg-surface-elevated p-4"><p className="text-xs font-semibold text-brand uppercase">Avec la plateforme</p></div>
+            <div className="bg-paper p-2.5 sm:p-4"><p className="text-[10px] font-semibold text-ink-faint uppercase sm:text-xs">Sans la plateforme</p></div>
+            <div className="bg-surface-elevated p-2.5 sm:p-4"><p className="text-[10px] font-semibold text-brand uppercase sm:text-xs">Avec la plateforme</p></div>
           </div>
           {[
             ["Recherche manuelle", "Veille centralisée"],
@@ -305,8 +305,8 @@ export default async function LandingPage() {
             ["Décisions intuitives", "Décisions fondées sur les données"],
           ].map(([before, after]) => (
             <div key={before} className="grid grid-cols-2 divide-x divide-line border-t border-line">
-              <div className="p-4 text-sm text-ink-muted">{before}</div>
-              <div className="p-4 text-sm font-medium text-ink">{after}</div>
+              <div className="p-2.5 text-xs text-ink-muted sm:p-4 sm:text-sm">{before}</div>
+              <div className="p-2.5 text-xs font-medium text-ink sm:p-4 sm:text-sm">{after}</div>
             </div>
           ))}
         </div>
