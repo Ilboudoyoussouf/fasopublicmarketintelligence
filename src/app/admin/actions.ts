@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requirePlatformAdmin } from "@/lib/session";
 import { revalidatePath } from "next/cache";
 import { DataQualityStatus } from "@prisma/client";
-import { runFullIngestion, ingestUploadedPdf, discoverAndAnalyzeSource, commitAnalyzedDocument } from "@/lib/ingestion/pipeline";
+import { runFullIngestion, discoverAndAnalyzeSource, commitAnalyzedDocument, analyzeUploadedPdf, ingestExistingDocument } from "@/lib/ingestion/pipeline";
 import { clearDemoMarkets } from "@/lib/admin/clear-demo-data";
 
 export async function clearDemoDataAction() {
@@ -37,7 +37,11 @@ export async function triggerIngestionAction(sourceId: string) {
   }
 }
 
-export async function uploadQuotidienAction(formData: FormData) {
+// Dépôt manuel avec aperçu avant validation : extrait avec Gemini SANS rien
+// écrire en base — l'admin voit les marchés détectés et choisit lesquels
+// ajouter (commitAnalyzedDocumentAction, déjà défini ci-dessous), au lieu
+// que le fichier soit ingéré aveuglément dès le dépôt.
+export async function analyzeUploadedPdfAction(formData: FormData) {
   await requirePlatformAdmin();
 
   const file = formData.get("file");
@@ -57,7 +61,25 @@ export async function uploadQuotidienAction(formData: FormData) {
 
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await ingestUploadedPdf({ sourceId, filename: file.name, buffer, publicationNumero: numero, publishedAt });
+    const result = await analyzeUploadedPdf({ sourceId, filename: file.name, buffer, publicationNumero: numero, publishedAt });
+    revalidatePath("/admin/sources");
+    revalidatePath("/admin/importations");
+    revalidatePath("/admin/jobs");
+    return { ok: true as const, filename: file.name, publicationNumero: numero, publishedAt, ...result };
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Repli sans aperçu pour un document déjà créé par analyzeUploadedPdfAction
+// (aperçu Gemini indisponible) — réutilise le même document et retombe sur
+// le passage complet (Gemini si possible, sinon le parseur par règles), qui
+// écrit directement en base.
+export async function ingestExistingDocumentAction(documentId: string, file: File) {
+  await requirePlatformAdmin();
+  try {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const result = await ingestExistingDocument(documentId, buffer);
     revalidatePath("/marches");
     revalidatePath("/dashboard");
     revalidatePath("/opportunites");

@@ -702,15 +702,13 @@ export async function runFullIngestion(sourceId: string) {
   return { ...discoverStats, retriedStalled: stalled.length, results };
 }
 
-/**
- * Dépôt manuel d'un quotidien PDF (section « import manuel ») : contourne le
- * téléchargement réseau (indisponible en sandbox, ou en attendant que le
- * connecteur DGCMEF soit confirmé fiable sur le site réel) en réutilisant
- * exactement le même passage extraction → classification → structuration →
- * validation que le robot automatique — aucune donnée créée par cette voie
- * n'est distinguable, dans le schéma, d'une donnée ingérée automatiquement.
- */
-export async function ingestUploadedPdf(params: {
+// Crée la publication + le document pour un dépôt manuel de quotidien PDF
+// (section « import manuel ») et enregistre le buffer dans le stockage brut
+// — étape commune à analyzeUploadedPdf() (aperçu avant validation) et
+// ingestExistingDocument() (repli sans aperçu sur le même document) : jamais
+// deux façons de créer ces lignes, pour ne pas risquer un document dupliqué
+// selon le chemin emprunté pour le même fichier.
+async function createUploadedDocument(params: {
   sourceId: string;
   filename: string;
   buffer: Buffer;
@@ -751,8 +749,47 @@ export async function ingestUploadedPdf(params: {
     });
   });
 
-  const result = await processDocumentBuffer(document.id, buffer);
-  return { documentId: document.id, publicationId: publication.id, ...result };
+  return { document, publication };
+}
+
+// Dépôt manuel avec aperçu avant validation (même principe que
+// discoverAndAnalyzeSource/commitAnalyzedDocument, mais pour un fichier
+// déposé à la main plutôt que découvert sur une source) : le document est
+// créé et le fichier stocké, puis extrait avec Gemini SANS rien écrire en
+// base — l'ajout effectif passe par commitAnalyzedDocument(), qui réutilise
+// exactement la même fonction d'écriture que tous les autres chemins
+// d'ingestion (processGeminiNotices).
+export async function analyzeUploadedPdf(params: {
+  sourceId: string;
+  filename: string;
+  buffer: Buffer;
+  publicationNumero: string;
+  publishedAt: Date;
+}): Promise<DocumentAnalysis & { documentId: string }> {
+  const { document } = await createUploadedDocument(params);
+
+  if (!isGeminiConfigured()) return { documentId: document.id, status: "gemini_not_configured" };
+
+  try {
+    const notices = await runJob(document.id, ExtractionJobStage.CLASSIFY, async () => {
+      const result = await extractNoticesWithGemini(params.buffer);
+      await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "CLASSIFIED" } });
+      return result;
+    });
+    return { documentId: document.id, status: "ok", notices };
+  } catch (err) {
+    await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "FAILED" } });
+    return { documentId: document.id, status: "extraction_failed", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Repli sans aperçu pour un document déjà créé par analyzeUploadedPdf() —
+// utilisé quand l'aperçu Gemini a échoué (clé absente, quota, réponse non
+// conforme) : réutilise le même document (jamais de doublon) et retombe sur
+// le passage complet (Gemini si possible, sinon le parseur par règles), qui
+// écrit directement en base comme le ferait le robot automatique.
+export async function ingestExistingDocument(documentId: string, buffer: Buffer) {
+  return processDocumentBuffer(documentId, buffer);
 }
 
 // ---------------------------------------------------------------------

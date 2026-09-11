@@ -5,7 +5,7 @@ import { toggleSourceActiveAction } from "@/app/admin/actions";
 import { formatDateTime } from "@/lib/utils";
 import { IngestButton } from "@/components/domain/IngestButton";
 import { ClearDemoDataButton } from "@/components/domain/ClearDemoDataButton";
-import { UploadQuotidienForm } from "@/components/domain/UploadQuotidienForm";
+import { UploadAndAnalyzeForm } from "@/components/domain/UploadAndAnalyzeForm";
 import { SourceAnalysisPanel } from "@/components/domain/SourceAnalysisPanel";
 
 export default async function AdminSourcesPage() {
@@ -18,9 +18,9 @@ export default async function AdminSourcesPage() {
         <CardBody className="space-y-2">
           <div>
             <p className="text-sm font-medium text-ink">Import manuel d&apos;un quotidien (PDF)</p>
-            <p className="text-xs text-ink-muted">Dépose directement le PDF d&apos;un quotidien DGCMEF pour l&apos;extraire et alimenter la base, sans attendre le passage du robot ou en complément du site (ex. numéro déjà en main).</p>
+            <p className="text-xs text-ink-muted">Dépose le PDF d&apos;un quotidien DGCMEF (numéro déjà en main, sans attendre le passage du robot). L&apos;IA (Gemini) extrait tous les champs de chaque marché — titre, autorité, secteur, région, financement, montants, calendrier complet, exigences, pièces requises, lots — puis affiche un aperçu : rien n&apos;est ajouté à la base tant que vous ne validez pas explicitement.</p>
           </div>
-          <UploadQuotidienForm sources={sources.map((s) => ({ id: s.id, name: s.name }))} />
+          <UploadAndAnalyzeForm sources={sources.map((s) => ({ id: s.id, name: s.name }))} />
         </CardBody>
       </Card>
       <Card>
