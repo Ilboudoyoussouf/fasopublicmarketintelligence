@@ -39,6 +39,7 @@
     "recharts": "^3.10.1",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4",
+    "tesseract.js": "^7.0.0",
     "tsx": "^4.23.13",
     "typescript": "^5",
     "zod": "^4.5.4"

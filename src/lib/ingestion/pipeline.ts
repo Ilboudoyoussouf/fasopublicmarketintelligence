@@ -908,14 +908,17 @@ type StoredAnalysis =
   | { status: "extraction_failed"; error: string }
   // Résultat du repli "import sans aperçu" (ingestExistingDocument) — écrit
   // directement en base, donc pas d'avis à valider ; juste le résultat final.
-  | ({ status: "committed" } & CommittedResult);
+  | ({ status: "committed" } & CommittedResult)
+  // Aperçu du parseur par règles (sans IA) — voir analyzeUploadedPdfWithoutAI.
+  | { status: "candidates_ready"; candidates: unknown[]; publicationNumero: string; publishedAt: string };
 
 export type AnalysisStatus =
   | { status: "processing" }
   | { status: "ok"; notices: GeminiNotice[]; truncated: boolean; invalidCount: number; publicationNumero?: string; publishedAt?: Date }
   | { status: "gemini_not_configured" }
   | { status: "extraction_failed"; error: string }
-  | ({ status: "committed" } & CommittedResult);
+  | ({ status: "committed" } & CommittedResult)
+  | { status: "candidates_ready"; candidates: ExtractedNoticeCandidate[]; publicationNumero: string; publishedAt: Date };
 
 /** Lu par polling côté client pendant qu'une analyse lancée en arrière-plan est en cours. */
 export async function getAnalysisStatus(documentId: string): Promise<AnalysisStatus> {
@@ -923,6 +926,17 @@ export async function getAnalysisStatus(documentId: string): Promise<AnalysisSta
   if (!document.pendingAnalysis) return { status: "processing" };
 
   const stored = document.pendingAnalysis as StoredAnalysis;
+  if (stored.status === "candidates_ready") {
+    return {
+      status: "candidates_ready",
+      // Revalidé (jamais fait confiance aveuglément à un JSON stocké) — même
+      // principe que reviseNotices() côté Gemini : les dates y survivent en
+      // chaînes ISO après l'aller-retour par la colonne Json.
+      candidates: reviseCandidates(stored.candidates),
+      publicationNumero: stored.publicationNumero,
+      publishedAt: new Date(stored.publishedAt),
+    };
+  }
   if (stored.status !== "ok") return stored;
 
   return {
@@ -1094,24 +1108,76 @@ export async function commitAnalyzedDocument(documentId: string, notices: unknow
 // d'expiration du proxy inverse ici) et répond directement.
 // ---------------------------------------------------------------------
 
-export type CandidatesAnalysis =
-  | { status: "ok"; candidates: ExtractedNoticeCandidate[] }
-  | { status: "extraction_failed"; error: string };
+// L'extraction par règles elle-même (segmentAndClassify) reste un calcul
+// local et instantané — mais depuis l'ajout du repli OCR (extract-text.ts),
+// l'étape qui la précède (extractPdfText) peut, sur un quotidien scanné
+// (page image sans couche de texte), prendre de longues secondes à
+// plusieurs minutes selon le nombre de pages (rendu image + reconnaissance
+// Tesseract, page par page). Même raison que pour Gemini : jamais de
+// requête HTTP tenue ouverte pendant tout ce temps, sous peine de heurter le
+// même délai d'expiration du proxy inverse déjà rencontré en conditions
+// réelles (voir runAnalysisInBackground). Ce repli est donc lancé EN
+// ARRIÈRE-PLAN comme le reste de ce fichier ; le client suit la progression
+// par polling (getAnalysisStatus) exactement comme pour le chemin Gemini.
+function runCandidatesAnalysisInBackground(documentId: string, buffer: Buffer, publicationNumero: string, publishedAt: Date): void {
+  (async () => {
+    try {
+      const fullText = await runJob(documentId, ExtractionJobStage.PARSE, async () => {
+        const extracted = await extractPdfText(buffer);
+        if (extracted.method === "failed") {
+          await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "FAILED" } });
+          throw new Error("Extraction de texte impossible (PDF illisible et OCR indisponible).");
+        }
+        for (const page of extracted.pages) {
+          await prisma.documentPage.upsert({
+            where: { documentId_pageNumber: { documentId, pageNumber: page.pageNumber } },
+            update: { rawText: page.text, ocrConfidence: page.confidence },
+            create: { documentId, pageNumber: page.pageNumber, rawText: page.text, ocrConfidence: page.confidence },
+          });
+        }
+        const text = extracted.pages.map((p) => p.text).join("\n");
+        await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: extracted.method === "ocr" ? "OCR_DONE" : "PARSED" } });
+        return text;
+      });
+
+      const candidates = await runJob(documentId, ExtractionJobStage.CLASSIFY, async () => {
+        const found = segmentAndClassify(fullText);
+        await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: "CLASSIFIED" } });
+        return found;
+      });
+
+      await prisma.document.update({
+        where: { id: documentId },
+        data: { pendingAnalysis: { status: "candidates_ready", candidates, publicationNumero, publishedAt: publishedAt.toISOString() } },
+      });
+    } catch (err) {
+      await prisma.document.update({
+        where: { id: documentId },
+        data: { pendingAnalysis: { status: "extraction_failed", error: (err instanceof Error ? err.message : String(err)).slice(0, 1900) } },
+      });
+    }
+  })().catch((err) => {
+    console.error(`[ingestion] Échec de l'analyse sans IA en arrière-plan du document ${documentId} :`, err);
+  });
+}
 
 /**
- * Crée le document, extrait son texte et le segmente/classe avec le
- * parseur par règles — SANS rien écrire en base pour les marchés eux-mêmes
- * (aperçu humain avant ajout, comme pour analyzeUploadedPdf côté Gemini).
- * Aucun numéro de quotidien ni date de publication n'est demandé à
- * l'utilisateur : deviné depuis le nom de fichier (guessNumeroFromFilename)
- * et la date du jour — le parseur par règles, contrairement à Gemini, ne
- * lit pas la page de garde du PDF pour les corriger après coup.
+ * Crée le document puis lance EN ARRIÈRE-PLAN l'extraction de son texte
+ * (avec repli OCR le cas échéant) et sa segmentation par le parseur par
+ * règles — SANS rien écrire en base pour les marchés eux-mêmes (aperçu
+ * humain avant ajout, comme pour analyzeUploadedPdf côté Gemini). Répond dès
+ * que le document existe ; le client suit la progression par polling
+ * (getAnalysisStatus). Aucun numéro de quotidien ni date de publication
+ * n'est demandé à l'utilisateur : deviné depuis le nom de fichier
+ * (guessNumeroFromFilename) et la date du jour — le parseur par règles,
+ * contrairement à Gemini, ne lit pas la page de garde du PDF pour les
+ * corriger après coup.
  */
 export async function analyzeUploadedPdfWithoutAI(params: {
   sourceId: string;
   filename: string;
   buffer: Buffer;
-}): Promise<{ documentId: string; publicationNumero: string; publishedAt: Date } & CandidatesAnalysis> {
+}): Promise<{ documentId: string; publicationNumero: string; publishedAt: Date }> {
   const provisionalNumero = guessNumeroFromFilename(params.filename);
   const provisionalDate = new Date();
   const { document } = await createUploadedDocument({
@@ -1122,41 +1188,9 @@ export async function analyzeUploadedPdfWithoutAI(params: {
     publishedAt: provisionalDate,
   });
 
-  try {
-    const fullText = await runJob(document.id, ExtractionJobStage.PARSE, async () => {
-      const extracted = await extractPdfText(params.buffer);
-      if (extracted.method === "failed") {
-        await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "FAILED" } });
-        throw new Error("Extraction de texte impossible (PDF illisible et OCR indisponible).");
-      }
-      for (const page of extracted.pages) {
-        await prisma.documentPage.upsert({
-          where: { documentId_pageNumber: { documentId: document.id, pageNumber: page.pageNumber } },
-          update: { rawText: page.text, ocrConfidence: page.confidence },
-          create: { documentId: document.id, pageNumber: page.pageNumber, rawText: page.text, ocrConfidence: page.confidence },
-        });
-      }
-      const text = extracted.pages.map((p) => p.text).join("\n");
-      await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: extracted.method === "ocr" ? "OCR_DONE" : "PARSED" } });
-      return text;
-    });
+  runCandidatesAnalysisInBackground(document.id, params.buffer, provisionalNumero, provisionalDate);
 
-    const candidates = await runJob(document.id, ExtractionJobStage.CLASSIFY, async () => {
-      const found = segmentAndClassify(fullText);
-      await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "CLASSIFIED" } });
-      return found;
-    });
-
-    return { documentId: document.id, publicationNumero: provisionalNumero, publishedAt: provisionalDate, status: "ok" as const, candidates };
-  } catch (err) {
-    return {
-      documentId: document.id,
-      publicationNumero: provisionalNumero,
-      publishedAt: provisionalDate,
-      status: "extraction_failed" as const,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
+  return { documentId: document.id, publicationNumero: provisionalNumero, publishedAt: provisionalDate };
 }
 
 /**
@@ -1174,7 +1208,10 @@ export async function commitAnalyzedCandidates(documentId: string, candidates: u
   const result = await runJob(documentId, ExtractionJobStage.EXTRACT, () => processRegexCandidates(revised, document, documentId));
   await runJob(documentId, ExtractionJobStage.VALIDATE, async () => {
     const lowConfidence = revised.some((c) => c.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD);
-    await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: lowConfidence ? "EXTRACTED" : "VALIDATED" } });
+    // pendingAnalysis n'a plus lieu d'être conservé une fois validé — sans
+    // ça, une relecture de ce document (getAnalysisStatus) après coup
+    // réafficherait un aperçu obsolète comme s'il restait à valider.
+    await prisma.document.update({ where: { id: documentId }, data: { extractionStatus: lowConfidence ? "EXTRACTED" : "VALIDATED", pendingAnalysis: Prisma.JsonNull } });
   });
 
   return { status: "ok" as const, candidatesFound: revised.length, extractionMethod: "regex-heuristic" as const, ...result };

@@ -153,10 +153,11 @@ export async function commitAnalyzedDocumentAction(documentId: string, notices: 
 }
 
 // Dépôt manuel SANS IA (parser par règles, parser.ts) : même principe
-// d'aperçu avant validation que le dépôt Gemini (analyzeUploadedPdfAction),
-// mais sans appel externe — le calcul est local et rapide, donc cette action
-// attend directement le résultat (pas de polling nécessaire ici, à la
-// différence du chemin Gemini où l'appel peut prendre plusieurs minutes).
+// d'aperçu avant validation que le dépôt Gemini (analyzeUploadedPdfAction).
+// L'extraction (avec repli OCR possible sur un quotidien scanné, voir
+// extract-text.ts) est lancée en arrière-plan — cette action répond dès que
+// le document existe, sans l'attendre ; le client suit la progression par
+// polling (getAnalysisStatusAction), comme pour le chemin Gemini.
 export async function analyzeUploadedPdfWithoutAIAction(formData: FormData) {
   await requirePlatformAdmin();
 

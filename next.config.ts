@@ -12,7 +12,11 @@ const nextConfig: NextConfig = {
   // (Turbopack/webpack) casse ce chemin en regroupant tout dans un chunk
   // unique ("Setting up fake worker failed"). Exclure le package du bundling
   // serveur préserve son arborescence réelle dans node_modules.
-  serverExternalPackages: ["pdf-parse"],
+  // tesseract.js (repli OCR, extract-text.ts) fait de même : son worker
+  // Node tourne dans un vrai `worker_threads.Worker(workerPath)`, qui exige
+  // un fichier réel sur disque au chemin attendu — même risque de rupture
+  // si le bundler le déplace.
+  serverExternalPackages: ["pdf-parse", "tesseract.js"],
 };
 
 export default nextConfig;

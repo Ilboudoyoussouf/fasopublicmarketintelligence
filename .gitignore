@@ -38,6 +38,10 @@ yarn-error.log*
 /storage/raw/*
 !/storage/raw/.gitkeep
 
+# cache Tesseract (repli OCR, extract-text.ts) — modèle décompressé à
+# l'exécution ; la source (tessdata/fra.traineddata.gz) reste versionnée
+/storage/tessdata-cache/
+
 # vercel
 .vercel
 
