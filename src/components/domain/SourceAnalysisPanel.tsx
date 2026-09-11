@@ -27,12 +27,20 @@ export function SourceAnalysisPanel({ sourceId }: { sourceId: string }) {
   function runAnalysis() {
     setAnalyzeError(null);
     startAnalyzing(async () => {
-      const result = await analyzeSourceAction(sourceId);
-      if (!result.ok) {
-        setAnalyzeError(result.error);
-        return;
+      try {
+        const result = await analyzeSourceAction(sourceId);
+        if (!result.ok) {
+          setAnalyzeError(result.error);
+          return;
+        }
+        setAnalyses(result.analyses);
+      } catch (err) {
+        // Une requête réseau interrompue (délai dépassé, coupure) rejette la
+        // promesse au lieu de renvoyer { ok: false } — sans ce filet,
+        // l'exception non gérée peut donner l'impression que la page a
+        // disparu alors que l'analyse a peut-être bien eu lieu côté serveur.
+        setAnalyzeError(`La requête a échoué ou a pris trop de temps (${err instanceof Error ? err.message : String(err)}). Réessayez.`);
       }
-      setAnalyses(result.analyses);
     });
   }
 

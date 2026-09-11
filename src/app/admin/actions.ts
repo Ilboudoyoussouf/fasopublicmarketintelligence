@@ -40,7 +40,9 @@ export async function triggerIngestionAction(sourceId: string) {
 // Dépôt manuel avec aperçu avant validation : extrait avec Gemini SANS rien
 // écrire en base — l'admin voit les marchés détectés et choisit lesquels
 // ajouter (commitAnalyzedDocumentAction, déjà défini ci-dessous), au lieu
-// que le fichier soit ingéré aveuglément dès le dépôt.
+// que le fichier soit ingéré aveuglément dès le dépôt. Ni le numéro du
+// quotidien ni sa date de publication ne sont demandés : Gemini les lit
+// lui-même sur la page de garde du PDF (voir analyzeUploadedPdf).
 export async function analyzeUploadedPdfAction(formData: FormData) {
   await requirePlatformAdmin();
 
@@ -49,23 +51,17 @@ export async function analyzeUploadedPdfAction(formData: FormData) {
     return { ok: false as const, error: "Aucun fichier PDF reçu." };
   }
   const sourceId = String(formData.get("sourceId") ?? "").trim();
-  const numero = String(formData.get("numero") ?? "").trim();
-  const publishedAtRaw = String(formData.get("publishedAt") ?? "").trim();
-  if (!sourceId || !numero || !publishedAtRaw) {
-    return { ok: false as const, error: "Source, numéro et date de publication sont requis." };
-  }
-  const publishedAt = new Date(publishedAtRaw);
-  if (Number.isNaN(publishedAt.getTime())) {
-    return { ok: false as const, error: "Date de publication invalide." };
+  if (!sourceId) {
+    return { ok: false as const, error: "Source requise." };
   }
 
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await analyzeUploadedPdf({ sourceId, filename: file.name, buffer, publicationNumero: numero, publishedAt });
+    const result = await analyzeUploadedPdf({ sourceId, filename: file.name, buffer });
     revalidatePath("/admin/sources");
     revalidatePath("/admin/importations");
     revalidatePath("/admin/jobs");
-    return { ok: true as const, filename: file.name, publicationNumero: numero, publishedAt, ...result };
+    return { ok: true as const, filename: file.name, ...result };
   } catch (err) {
     return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
   }

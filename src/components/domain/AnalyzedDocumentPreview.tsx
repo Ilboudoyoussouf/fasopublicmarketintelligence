@@ -36,17 +36,27 @@ export function AnalyzedDocumentPreview({ documentId, notices }: { documentId: s
     const toCommit = notices.filter((_, i) => selected.has(i));
     if (toCommit.length === 0) return;
     setState({ pending: true, message: null, error: null });
-    commitAnalyzedDocumentAction(documentId, toCommit).then((result) => {
-      if (!result.ok) {
-        setState({ pending: false, message: null, error: result.error });
-        return;
-      }
-      setState({
+    commitAnalyzedDocumentAction(documentId, toCommit)
+      .then((result) => {
+        if (!result.ok) {
+          setState({ pending: false, message: null, error: result.error });
+          return;
+        }
+        setState({
+          pending: false,
+          error: null,
+          message: `${result.createdMarkets} marché(s) créé(s) · ${result.updatedMarkets} mise(s) à jour · ${result.skippedUnmatchedUpdates} contenu(s) de suivi ignoré(s) (sans marché d'origine).`,
+        });
+      })
+      // Une requête réseau interrompue (délai dépassé, coupure) rejette la
+      // promesse au lieu de renvoyer { ok: false } — sans ce filet,
+      // l'exception non gérée peut donner l'impression que la page a
+      // disparu alors que l'ajout a peut-être bien eu lieu côté serveur.
+      .catch((err) => setState({
         pending: false,
-        error: null,
-        message: `${result.createdMarkets} marché(s) créé(s) · ${result.updatedMarkets} mise(s) à jour · ${result.skippedUnmatchedUpdates} contenu(s) de suivi ignoré(s) (sans marché d'origine).`,
-      });
-    });
+        message: null,
+        error: `La requête a échoué ou a pris trop de temps (${err instanceof Error ? err.message : String(err)}). Vérifiez dans « Marchés » si l'ajout a bien eu lieu avant de réessayer.`,
+      }));
   }
 
   if (notices.length === 0) {

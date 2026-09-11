@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { extractNoticesWithGemini, isGeminiConfigured } from "@/lib/ingestion/gemini-extractor";
+import { extractNoticesWithGemini, extractQuotidienWithGemini, isGeminiConfigured } from "@/lib/ingestion/gemini-extractor";
 
 function geminiResponse(text: string, finishReason = "STOP") {
   return {
@@ -152,5 +152,40 @@ describe("gemini-extractor — extractNoticesWithGemini", () => {
   it("échoue proprement quand la réponse n'est pas un JSON exploitable", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(geminiResponse("ceci n'est pas du JSON") as unknown as Response);
     await expect(extractNoticesWithGemini(Buffer.from("pdf"), { apiKey: "test-key" })).rejects.toThrow();
+  });
+});
+
+describe("gemini-extractor — extractQuotidienWithGemini (numéro/date du bulletin)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("lit le numéro et la date du quotidien en plus des avis — dépôt manuel sans saisie humaine", async () => {
+    const payload = JSON.stringify({
+      quotidienNumero: "4485",
+      quotidienDate: "2025-06-15",
+      notices: [{ isFreshCall: true, publicationType: "DEMANDE_PRIX", authorityType: "AUTRE", title: "Acquisition de fournitures de bureau" }],
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(geminiResponse(payload) as unknown as Response);
+
+    const result = await extractQuotidienWithGemini(Buffer.from("pdf"), { apiKey: "test-key" });
+    expect(result.publicationNumero).toBe("4485");
+    expect(result.publicationDate?.toISOString().slice(0, 10)).toBe("2025-06-15");
+    expect(result.notices).toHaveLength(1);
+  });
+
+  it("renvoie null pour le numéro/la date si Gemini ne les a pas trouvés, sans faire échouer l'extraction", async () => {
+    const payload = JSON.stringify({
+      notices: [{ isFreshCall: true, publicationType: "DEMANDE_PRIX", authorityType: "AUTRE", title: "Acquisition sans en-tête lisible" }],
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(geminiResponse(payload) as unknown as Response);
+
+    const result = await extractQuotidienWithGemini(Buffer.from("pdf"), { apiKey: "test-key" });
+    expect(result.publicationNumero).toBeNull();
+    expect(result.publicationDate).toBeNull();
+    expect(result.notices).toHaveLength(1);
   });
 });

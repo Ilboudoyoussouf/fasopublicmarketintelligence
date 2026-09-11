@@ -7,7 +7,7 @@ import type { SourceConnector } from "@/lib/ingestion/connector";
 import { getRawStorage } from "@/lib/ingestion/storage";
 import { extractPdfText } from "@/lib/ingestion/extract-text";
 import { segmentAndClassify } from "@/lib/ingestion/parser";
-import { extractNoticesWithGemini, isGeminiConfigured, reviseNotices, type GeminiNotice } from "@/lib/ingestion/gemini-extractor";
+import { extractNoticesWithGemini, extractQuotidienWithGemini, isGeminiConfigured, reviseNotices, type GeminiNotice } from "@/lib/ingestion/gemini-extractor";
 import { findMatchingMarket, registerBlockOrDetectDuplicate, jaccardSimilarity } from "@/lib/ingestion/dedupe";
 import {
   ExtractionJobStage, ExtractionJobStatus, DataQualityStatus,
@@ -752,6 +752,62 @@ async function createUploadedDocument(params: {
   return { document, publication };
 }
 
+// Devine le numéro du quotidien à partir du nom de fichier (souvent fiable
+// en pratique : "Quotidien_n_4485.pdf", "quotidien-4477.pdf"...) — une
+// valeur provisoire pour pouvoir créer la publication AVANT l'appel Gemini
+// (nécessaire pour rattacher le suivi ExtractionJob à un documentId réel
+// pendant l'extraction), corrigée ensuite par reconcilePublicationMetadata()
+// si Gemini lit un numéro différent sur la page de garde du PDF.
+export function guessNumeroFromFilename(filename: string): string {
+  const base = filename.replace(/\.pdf$/i, "");
+  // Priorité au numéro qui suit le mot "quotidien" — de nombreux widgets de
+  // dépôt préfixent le nom de fichier d'origine par un identifiant (hash,
+  // horodatage), lui-même composé de chiffres, qu'une simple recherche du
+  // premier groupe de chiffres capterait à tort (constaté en pratique avec
+  // "a1b2c3d4-Quotidien_n_4483.pdf" → "a1b2" plutôt que "4483").
+  const afterKeyword = base.match(/quotidien[^\d]*(\d{3,6}(?:[-_]\d{3,6})?)/i);
+  if (afterKeyword) return afterKeyword[1].replace(/_/g, "-");
+  // Sinon, le DERNIER groupe de chiffres du nom : plus proche de l'extension
+  // donc plus probablement le numéro que ne l'est un préfixe généré
+  // automatiquement, généralement placé en tête de fichier.
+  const matches = [...base.matchAll(/\d{3,6}(?:[-_]\d{3,6})?/g)];
+  if (matches.length > 0) return matches[matches.length - 1][0].replace(/_/g, "-");
+  return `manuel-${Date.now()}`;
+}
+
+// Corrige, après extraction, le numéro/la date provisoires d'une publication
+// créée pour un dépôt manuel par les valeurs réellement lues par Gemini sur
+// la page de garde du document. Si ce numéro correspond à une publication
+// déjà existante (même quotidien déposé sous un autre nom de fichier, ou
+// second passage), le document y est rattaché et la publication provisoire
+// (vide, tout juste créée, et sans autre document) est supprimée plutôt que
+// de laisser deux publications pour un même quotidien.
+async function reconcilePublicationMetadata(
+  document: { id: string },
+  provisionalPublication: { id: string; sourceId: string },
+  provisionalNumero: string,
+  finalNumero: string,
+  finalDate: Date,
+) {
+  if (finalNumero === provisionalNumero) {
+    await prisma.publication.update({ where: { id: provisionalPublication.id }, data: { publishedAt: finalDate, title: `Quotidien n°${finalNumero}` } });
+    return;
+  }
+  const existing = await prisma.publication.findUnique({
+    where: { sourceId_numero_kind: { sourceId: provisionalPublication.sourceId, numero: finalNumero, kind: PublicationKind.QUOTIDIEN_MARCHES } },
+  });
+  if (existing && existing.id !== provisionalPublication.id) {
+    await prisma.document.update({ where: { id: document.id }, data: { publicationId: existing.id } });
+    await prisma.publication.update({ where: { id: existing.id }, data: { publishedAt: finalDate } });
+    await prisma.publication.delete({ where: { id: provisionalPublication.id } });
+  } else {
+    await prisma.publication.update({
+      where: { id: provisionalPublication.id },
+      data: { numero: finalNumero, publishedAt: finalDate, title: `Quotidien n°${finalNumero}` },
+    });
+  }
+}
+
 // Dépôt manuel avec aperçu avant validation (même principe que
 // discoverAndAnalyzeSource/commitAnalyzedDocument, mais pour un fichier
 // déposé à la main plutôt que découvert sur une source) : le document est
@@ -759,27 +815,51 @@ async function createUploadedDocument(params: {
 // base — l'ajout effectif passe par commitAnalyzedDocument(), qui réutilise
 // exactement la même fonction d'écriture que tous les autres chemins
 // d'ingestion (processGeminiNotices).
+//
+// Ni le numéro du quotidien ni sa date de publication ne sont demandés à
+// l'utilisateur : une valeur provisoire (déduite du nom de fichier / date du
+// jour) sert uniquement à créer la publication, puis Gemini lit les
+// véritables numéro et date sur la page de garde du PDF et les corrige.
 export async function analyzeUploadedPdf(params: {
   sourceId: string;
   filename: string;
   buffer: Buffer;
-  publicationNumero: string;
-  publishedAt: Date;
-}): Promise<DocumentAnalysis & { documentId: string }> {
-  const { document } = await createUploadedDocument(params);
+}): Promise<DocumentAnalysis & { documentId: string; publicationNumero: string; publishedAt: Date }> {
+  const provisionalNumero = guessNumeroFromFilename(params.filename);
+  const provisionalDate = new Date();
+  const { document, publication } = await createUploadedDocument({
+    sourceId: params.sourceId,
+    filename: params.filename,
+    buffer: params.buffer,
+    publicationNumero: provisionalNumero,
+    publishedAt: provisionalDate,
+  });
 
-  if (!isGeminiConfigured()) return { documentId: document.id, status: "gemini_not_configured" };
+  if (!isGeminiConfigured()) {
+    return { documentId: document.id, status: "gemini_not_configured", publicationNumero: provisionalNumero, publishedAt: provisionalDate };
+  }
 
   try {
-    const notices = await runJob(document.id, ExtractionJobStage.CLASSIFY, async () => {
-      const result = await extractNoticesWithGemini(params.buffer);
+    const extraction = await runJob(document.id, ExtractionJobStage.CLASSIFY, async () => {
+      const result = await extractQuotidienWithGemini(params.buffer);
       await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "CLASSIFIED" } });
       return result;
     });
-    return { documentId: document.id, status: "ok", notices };
+
+    const finalNumero = extraction.publicationNumero ?? provisionalNumero;
+    const finalDate = extraction.publicationDate ?? provisionalDate;
+    await reconcilePublicationMetadata(document, publication, provisionalNumero, finalNumero, finalDate);
+
+    return { documentId: document.id, status: "ok", notices: extraction.notices, publicationNumero: finalNumero, publishedAt: finalDate };
   } catch (err) {
     await prisma.document.update({ where: { id: document.id }, data: { extractionStatus: "FAILED" } });
-    return { documentId: document.id, status: "extraction_failed", error: err instanceof Error ? err.message : String(err) };
+    return {
+      documentId: document.id,
+      status: "extraction_failed",
+      error: err instanceof Error ? err.message : String(err),
+      publicationNumero: provisionalNumero,
+      publishedAt: provisionalDate,
+    };
   }
 }
 

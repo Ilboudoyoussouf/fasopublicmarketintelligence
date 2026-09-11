@@ -188,7 +188,14 @@ const noticeSchema = z.object({
 
 export type GeminiNotice = z.infer<typeof noticeSchema>;
 
-const responseSchema = z.object({ notices: z.array(noticeSchema).max(300).default([]) });
+// Numéro et date du quotidien lui-même (page de garde/en-tête) — permet au
+// dépôt manuel (section admin/sources) de se passer d'une saisie humaine :
+// l'IA lit ces informations dans le document au lieu qu'on les lui demande.
+const responseSchema = z.object({
+  quotidienNumero: nullableTruncated(20),
+  quotidienDate: dateStringSchema,
+  notices: z.array(noticeSchema).max(300).default([]),
+});
 
 /**
  * Revalide un tableau d'avis Gemini déjà extraits — utilisé quand des avis
@@ -205,9 +212,11 @@ export function reviseNotices(notices: unknown[]): GeminiNotice[] {
 
 const EXTRACTION_PROMPT = `Tu es un extracteur de données structurées pour les quotidiens des marchés publics du Burkina Faso, publiés par la DGCMEF (Direction Générale du Contrôle des Marchés publics et des Engagements Financiers).
 
+ÉTAPE 0 : repère sur la page de garde ou l'en-tête du document le numéro du quotidien lui-même (ex. "N° 4485" ou "4485-4486" pour un numéro double) et sa date de publication (ex. "du 15/06/2025"). Ce sont des informations DIFFÉRENTES de la référence de chaque marché individuel — c'est le numéro/la date du BULLETIN dans son ensemble, généralement en haut de la première page.
+
 ÉTAPE 1 (impérative) : parcours le document PAGE PAR PAGE, du début à la fin. Un quotidien contient généralement entre 10 et 70 avis distincts répartis sur toutes les pages. N'ARRÊTE JAMAIS après avoir trouvé le premier avis — continue systématiquement jusqu'à la dernière page. Ignore uniquement les pages de sommaire/couverture pures sans contenu de marché.
 
-ÉTAPE 2 : pour CHAQUE avis distinct repéré, extrait ses champs (détail ci-dessous). Réponds avec un objet JSON de la forme {"notices": [ ... ]}, un élément par avis.
+ÉTAPE 2 : pour CHAQUE avis distinct repéré, extrait ses champs (détail ci-dessous). Réponds avec un objet JSON de la forme {"quotidienNumero": le numéro du bulletin repéré à l'étape 0 (chaîne, ex. "4485", ou "4485-4486" pour un numéro double) ou null si introuvable, "quotidienDate": sa date de publication au format AAAA-MM-JJ ou null si introuvable, "notices": [ ... ]}, un élément de "notices" par avis.
 
 Deux types de contenus se mélangent dans le document, à distinguer via "isFreshCall" :
 1. isFreshCall=true : un NOUVEL appel à la concurrence — avis d'appel d'offres, demande de prix, demande de cotation, manifestation d'intérêt, demande de propositions. Reconnaissable à : une autorité qui « sollicite des offres », un objet du marché, une date limite de dépôt À VENIR.
@@ -368,17 +377,35 @@ async function callGemini(pdfBuffer: Buffer, options: GeminiCallOptions = {}): P
   throw lastError;
 }
 
+export type QuotidienExtraction = {
+  notices: GeminiNotice[];
+  publicationNumero: string | null;
+  publicationDate: Date | null;
+};
+
 /**
- * Extrait tous les avis d'un quotidien PDF via Gemini. Lève une erreur en
- * cas d'échec (réseau, quota, réponse non conforme) — à l'appelant de
- * décider du repli (voir pipeline.ts : bascule automatique vers
- * segmentAndClassify si cette fonction rejette).
+ * Extrait tous les avis d'un quotidien PDF via Gemini, ainsi que le numéro
+ * et la date du bulletin lui-même (lus sur sa page de garde) — utilisé par
+ * le dépôt manuel (section admin/sources) pour se passer d'une saisie
+ * humaine de ces deux champs. Lève une erreur en cas d'échec (réseau, quota,
+ * réponse non conforme) — à l'appelant de décider du repli (voir
+ * pipeline.ts : bascule automatique vers segmentAndClassify si cette
+ * fonction rejette).
  */
-export async function extractNoticesWithGemini(pdfBuffer: Buffer, options: GeminiCallOptions = {}): Promise<GeminiNotice[]> {
+export async function extractQuotidienWithGemini(pdfBuffer: Buffer, options: GeminiCallOptions = {}): Promise<QuotidienExtraction> {
   const raw = await callGemini(pdfBuffer, options);
   const parsed = responseSchema.safeParse(raw);
   if (!parsed.success) {
     throw new Error(`Réponse Gemini non conforme au schéma attendu : ${parsed.error.message.slice(0, 500)}`);
   }
-  return parsed.data.notices.filter((n) => n.title && n.title.length > 3);
+  return {
+    notices: parsed.data.notices.filter((n) => n.title && n.title.length > 3),
+    publicationNumero: parsed.data.quotidienNumero,
+    publicationDate: parsed.data.quotidienDate,
+  };
+}
+
+/** Variante ne retournant que les avis — utilisée quand le numéro/la date du bulletin sont déjà connus (document découvert via une source, plutôt que déposé à la main). */
+export async function extractNoticesWithGemini(pdfBuffer: Buffer, options: GeminiCallOptions = {}): Promise<GeminiNotice[]> {
+  return (await extractQuotidienWithGemini(pdfBuffer, options)).notices;
 }

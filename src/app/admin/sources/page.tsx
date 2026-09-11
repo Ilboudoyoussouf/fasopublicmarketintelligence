@@ -8,6 +8,15 @@ import { ClearDemoDataButton } from "@/components/domain/ClearDemoDataButton";
 import { UploadAndAnalyzeForm } from "@/components/domain/UploadAndAnalyzeForm";
 import { SourceAnalysisPanel } from "@/components/domain/SourceAnalysisPanel";
 
+// L'extraction Gemini d'un quotidien de plusieurs dizaines de pages peut
+// prendre plusieurs minutes (voir MAX_ATTEMPTS/retries dans
+// gemini-extractor.ts) — au-delà de la limite par défaut des fonctions
+// serverless (souvent 10-60s), ce qui interromprait la requête en plein
+// milieu et ferait échouer les Server Actions de cette page de façon
+// confuse côté client. Sans effet sur un hébergement Node.js persistant
+// (Hostinger) ; pris en compte automatiquement sur Vercel.
+export const maxDuration = 300;
+
 export default async function AdminSourcesPage() {
   const sources = await prisma.source.findMany({ include: { _count: { select: { publications: true } } } });
 
