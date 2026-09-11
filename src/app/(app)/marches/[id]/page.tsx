@@ -162,7 +162,7 @@ export default async function MarcheDetailPage({ params }: { params: Promise<{ i
           {!priceStats || priceStats._count._all === 0 ? (
             <StateNotice kind="empty" title="Historique insuffisant" description="Pas assez de résultats attribués dans ce secteur pour une analyse statistique." />
           ) : (
-            <div className="grid grid-cols-3 gap-3 text-sm">
+            <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
               <CalRow label="Moyenne attribuée" value={formatFcfa(priceStats._avg.amountAwarded?.toString())} />
               <CalRow label="Minimum" value={formatFcfa(priceStats._min.amountAwarded?.toString())} />
               <CalRow label="Maximum" value={formatFcfa(priceStats._max.amountAwarded?.toString())} />

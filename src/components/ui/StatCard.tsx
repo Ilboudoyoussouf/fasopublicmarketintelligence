@@ -27,9 +27,9 @@ export function StatCard({
 }) {
   return (
     <Card className={className}>
-      <CardBody className="space-y-1.5">
+      <CardBody className="space-y-1.5 p-3 sm:p-4">
         <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">{label}</p>
-        <p className="num text-2xl font-bold tracking-tight text-ink">{value}</p>
+        <p className="num text-xl font-bold tracking-tight text-ink break-words sm:text-2xl">{value}</p>
         <div className="flex items-center gap-2 text-xs">
           {delta !== undefined && (
             <span className={cn("num inline-flex items-center gap-0.5 font-medium", delta >= 0 ? "text-success" : "text-critical")}>

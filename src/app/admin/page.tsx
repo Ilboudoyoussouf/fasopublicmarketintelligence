@@ -38,9 +38,9 @@ export default async function AdminDashboardPage() {
         <CardHeader><CardTitle>Activité récente (audit)</CardTitle></CardHeader>
         <CardBody className="space-y-1.5">
           {auditRecent.map((a) => (
-            <div key={a.id} className="flex items-center justify-between text-sm">
-              <span className="text-ink-muted">{a.action} — {a.entityType}</span>
-              <Badge tone="neutral">{new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" }).format(a.occurredAt)}</Badge>
+            <div key={a.id} className="flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:justify-between sm:gap-2">
+              <span className="min-w-0 truncate text-ink-muted">{a.action} — {a.entityType}</span>
+              <Badge tone="neutral" className="shrink-0 self-start sm:self-auto">{new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" }).format(a.occurredAt)}</Badge>
             </div>
           ))}
         </CardBody>

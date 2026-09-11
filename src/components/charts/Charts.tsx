@@ -18,6 +18,18 @@ const TOOLTIP_STYLE = { fontSize: 12, borderRadius: 8, background: "#1b2025", bo
 const TOOLTIP_LABEL_STYLE = { color: "#a7adb3" };
 const SERIES_COLORS = [NEUTRAL, "#5b9cf6", "#35c47a", "#e6b84a", "#70777e"];
 
+// Recharts n'enveloppe ni ne tronque jamais un libellé d'axe trop long — un
+// nom d'organisme ou de secteur un peu verbeux (fréquent dans les données
+// DGCMEF réelles, ex. "Ministère de l'Éducation Nationale, de
+// l'Alphabétisation et de la Promotion des Langues Nationales") déborde
+// alors largement de la largeur réservée à l'axe et se superpose aux barres
+// voisines — illisible, surtout sur un écran étroit où cette largeur est
+// proportionnellement plus grande par rapport au graphique entier.
+function truncateTick(value: unknown): string {
+  const s = String(value ?? "");
+  return s.length > 20 ? `${s.slice(0, 20)}…` : s;
+}
+
 export function SimpleBarChart({
   data, xKey, yKey, color = NEUTRAL, highlightKey,
 }: {
@@ -33,7 +45,7 @@ export function SimpleBarChart({
       <BarChart data={data} layout="vertical" margin={{ left: 8, right: 16 }}>
         <CartesianGrid strokeDasharray="3 3" stroke={GRID} horizontal={false} />
         <XAxis type="number" tick={{ fontSize: 11, fill: TICK }} />
-        <YAxis type="category" dataKey={xKey} width={140} tick={{ fontSize: 11, fill: TICK }} />
+        <YAxis type="category" dataKey={xKey} width={120} tick={{ fontSize: 11, fill: TICK }} tickFormatter={truncateTick} />
         <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
         <Bar dataKey={yKey} radius={[0, 4, 4, 0]}>
           {data.map((d, i) => (
